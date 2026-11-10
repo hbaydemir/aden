@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 
@@ -83,6 +83,11 @@ public sealed partial class MainWindow
             });
             navigation.Items.Add(row);
         }
+        if (updateCard is not null)
+        {
+            DockPanel.SetDock(updateCard, Dock.Bottom);
+            rail.Children.Add(updateCard);
+        }
         rail.Children.Add(navigation);
 
         var body = new DockPanel { Margin = new Thickness(23, 17, 23, 9) };
@@ -97,11 +102,6 @@ public sealed partial class MainWindow
         };
         DockPanel.SetDock(badge, Dock.Right);
         top.Children.Add(badge);
-        if (updateNotice is not null)
-        {
-            DockPanel.SetDock(updateNotice, Dock.Right);
-            top.Children.Add(updateNotice);
-        }
         var heading = Label("", 31, bold: true);
         top.Children.Add(heading);
         DockPanel.SetDock(top, Dock.Top);
@@ -133,5 +133,3 @@ public sealed partial class MainWindow
     private static ScrollViewer TouchScroll(UIElement child) =>
         new() { Content = child, PanningMode = PanningMode.VerticalOnly, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
 }
-
-

@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: aden
+      POSTGRES_USER: aden
+      POSTGRES_PASSWORD: ${ADEN_DB_PASSWORD:?ADEN_DB_PASSWORD gerekli}
+    volumes:
+      - aden_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aden -d aden"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+  api:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    environment:
+      ConnectionStrings__Aden: "Host=db;Database=aden;Username=aden;Password=${ADEN_DB_PASSWORD}"
+      Aden__SyncKey: ${ADEN_SYNC_KEY:?ADEN_SYNC_KEY gerekli}
+    ports:
+      - "127.0.0.1:5080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  aden_pg:

@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS entries (
+    position INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    data TEXT NOT NULL,
+    synced INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS settings (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

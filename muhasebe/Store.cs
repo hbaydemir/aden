@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -11,10 +11,14 @@ public sealed class Store : IDisposable
 
     private readonly SqliteConnection db;
 
+    /// <summary>Veritabanının bulunduğu klasör (fotoğraflar burada saklanır).</summary>
+    public string Folder { get; }
+
     public Store(string path)
     {
         const int currentSchema = 1;
         path = Path.GetFullPath(path);
+        Folder = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var existing = File.Exists(path) && new FileInfo(path).Length > 0;
         db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path }.ToString());

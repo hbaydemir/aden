@@ -94,9 +94,9 @@ public sealed partial class MainWindow
             if (payments.Count > 0)
                 throw new InvalidOperationException("Sepeti değiştirmek için önce kayıtlı ödeme parçalarını kaldır.");
             var quantity = Quantity(count);
-            var existing = basket.FirstOrDefault(line => line.Code == product.Code && line.UnitPrice == product.Price);
+            var existing = basket.FirstOrDefault(line => line.Code == product.Code && line.UnitPrice == product.SalePrice);
             if (existing is null)
-                basket.Add(new(product.Code, product.Name, quantity, product.Price));
+                basket.Add(new(product.Code, product.Name, quantity, product.SalePrice));
             else
             {
                 if ((long)existing.Quantity + quantity > 1_000_000)
@@ -118,7 +118,8 @@ public sealed partial class MainWindow
             pager.Children.Clear();
             var term = search.Text.Trim();
             var matched = products.Values
-                .Where(product => term.Length == 0 || product.Barcode.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                .Where(product => term.Length == 0 ||
+                    (product.Barcode != DefaultBarcode && product.Barcode.Contains(term, StringComparison.OrdinalIgnoreCase)) ||
                     product.Code.Contains(term, StringComparison.OrdinalIgnoreCase) ||
                     culture.CompareInfo.IndexOf(product.Name, term, CompareOptions.IgnoreCase) >= 0)
                 .OrderBy(product => product.Name, StringComparer.Create(culture, true)).ToArray();
@@ -159,36 +160,62 @@ public sealed partial class MainWindow
         Button Tile(Product product, double size)
         {
             var available = stock.GetValueOrDefault(product.Code).Shop;
+            var discounted = product.SalePrice < product.Price;
             var tile = new Button
             {
                 Style = (Style)FindResource("PosTile"), Width = size, Height = size,
-                Margin = new Thickness(0, 0, tileGap, tileGap)
+                Margin = new Thickness(0, 0, tileGap, tileGap), Padding = new Thickness(0)
             };
             tile.Click += (_, _) => Run(() => AddProduct(product));
-            var card = new DockPanel();
-            var price = Label(Format(product.Price), 18, "#2563EB", true);
-            DockPanel.SetDock(price, Dock.Bottom);
-            card.Children.Add(price);
+            var card = new Grid();
+            card.SizeChanged += (_, _) => card.Clip = new RectangleGeometry(new Rect(card.RenderSize), 13, 13);
+            card.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            card.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            // Fotoğraf alanı: kapak fotoğrafı ya da NO IMAGE görseli
+            var photo = new Grid { Background = Paint("#F1F2F4") };
+            photo.Children.Add(new Image { Source = Photo(CoverOf(product), 320), Stretch = Stretch.UniformToFill });
             var badge = new Border
             {
-                CornerRadius = new CornerRadius(6), Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, 0, 0, 6),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Background = Paint(available > 0 ? "#F0FDF4" : "#FEF2F2"),
-                Child = Label(available > 0 ? $"{available} adet" : "Stok yok", 11, available > 0 ? "#15803D" : "#DC2626", true)
+                CornerRadius = new CornerRadius(6), Padding = new Thickness(7, 2, 7, 3), Margin = new Thickness(8),
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+                Background = Paint(available > 0 ? "#E6FFFFFF" : "#F2DC2626"),
+                Child = Label(available > 0 ? $"{available} adet" : "Stok yok", 11, available > 0 ? "#15803D" : "#FFFFFF", true)
             };
-            DockPanel.SetDock(badge, Dock.Bottom);
-            card.Children.Add(badge);
-            var code = Label(product.Code, 11, Muted);
-            code.TextTrimming = TextTrimming.CharacterEllipsis;
-            DockPanel.SetDock(code, Dock.Top);
-            card.Children.Add(code);
-            var name = Label(product.Name, 15, bold: true);
-            name.Margin = new Thickness(0, 4, 0, 0);
-            name.TextWrapping = TextWrapping.Wrap;
+            photo.Children.Add(badge);
+            if (discounted)
+            {
+                photo.Children.Add(new Border
+                {
+                    CornerRadius = new CornerRadius(6), Padding = new Thickness(7, 2, 7, 3), Margin = new Thickness(8),
+                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+                    Background = Paint("#DC2626"),
+                    Child = Label($"−%{DiscountRate(product.Price, product.SalePrice).ToString("0.#", culture)}", 11, "#FFFFFF", true)
+                });
+            }
+            card.Children.Add(photo);
+
+            var info = new StackPanel { Margin = new Thickness(10, 8, 10, 10) };
+            Grid.SetRow(info, 1);
+            var name = Label(product.Name, 13, bold: true);
             name.TextTrimming = TextTrimming.CharacterEllipsis;
-            card.Children.Add(name);
+            name.ToolTip = product.Name;
+            info.Children.Add(name);
+            var prices = new WrapPanel { Margin = new Thickness(0, 2, 0, 0) };
+            var price = Label(Format(product.SalePrice), 16, discounted ? "#DC2626" : "#2563EB", true);
+            price.Margin = new Thickness(0, 0, 6, 0);
+            prices.Children.Add(price);
+            if (discounted)
+            {
+                var old = Label(Format(product.Price), 11, Muted);
+                old.TextDecorations = TextDecorations.Strikethrough;
+                old.VerticalAlignment = VerticalAlignment.Center;
+                prices.Children.Add(old);
+            }
+            info.Children.Add(prices);
+            card.Children.Add(info);
             tile.Content = card;
-            AutomationProperties.SetName(tile, $"{product.Name}, {Format(product.Price)}, dükkânda {available} adet");
+            AutomationProperties.SetName(tile, $"{product.Name}, {Format(product.SalePrice)}, dükkânda {available} adet");
             return tile;
         }
 
@@ -196,7 +223,7 @@ public sealed partial class MainWindow
         {
             var width = scroll.ViewportWidth;
             if (width <= 0) return 160;
-            var columns = Math.Max(2, (int)(width / (140 + tileGap)));
+            var columns = Math.Max(2, (int)(width / (160 + tileGap)));
             return Math.Floor(width / columns) - tileGap;
         }
 

@@ -119,6 +119,7 @@ public sealed partial class MainWindow : Window
             if (item.Value.Archived) accounts.Remove(item.Value.Code);
             else accounts[item.Value.Code] = item.Value;
         }
+        LoadCategories();
         foreach (var item in Read<Stock>("stock")) Move(item.Value.Code, item.Value.Warehouse, item.Value.Shop);
         foreach (var sale in Read<Sale>("sale"))
             foreach (var line in sale.Value.Lines) Move(line.Code, 0, -line.Quantity);
@@ -137,7 +138,7 @@ public sealed partial class MainWindow : Window
     private Product Find(string value)
     {
         if (products.TryGetValue(value, out var product)) return product;
-        var barcode = products.Values.FirstOrDefault(p => p.Barcode == value);
+        var barcode = value == DefaultBarcode ? null : products.Values.FirstOrDefault(p => p.Barcode == value);
         if (barcode is not null) return barcode;
         var matches = products.Values.Where(p =>
             culture.CompareInfo.IndexOf(p.Name, value, CompareOptions.IgnoreCase) >= 0).Take(2).ToArray();

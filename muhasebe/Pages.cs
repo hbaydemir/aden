@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
@@ -355,13 +355,37 @@ public sealed partial class MainWindow
         panel.Width = 760;
 
         var company = Text(store.Setting("company", "Aden"));
-        var contact = Multiline(store.Setting("companyContact"));
-        panel.Children.Add(SettingsCard("Firma bilgileri", "Teklif ve satış özetlerinde görünür.",
-            Form(1, F(Field("Firma unvanı", company)), F(Field("Adres ve iletişim bilgileri", contact))),
+        company.MaxLength = 200;
+        var phone = Text(store.Setting("companyPhone"));
+        phone.MaxLength = 40;
+        // Eski sürümlerde adres ve iletişim tek alandaydı.
+        var address = Multiline(store.Setting("companyAddress", store.Setting("companyPhone").Length == 0 ? store.Setting("companyContact") : ""), 64);
+        address.MaxLength = 1000;
+        var email = Text(store.Setting("companyEmail"));
+        email.MaxLength = 200;
+        var web = Text(store.Setting("companyWeb"));
+        web.MaxLength = 200;
+        panel.Children.Add(SettingsCard("Firma bilgileri", "Teklif PDF'i, teklif çıktısı ve satış özetlerinde görünür.",
+            Form(2, F(Field("Firma ünvanı", company, true), 2), F(Field("Telefon numarası", phone, true)), F(Field("E-posta", email)),
+                F(Field("Adres", address, true), 2), F(Field("Web sitesi", web), 2)),
             Act("Kaydet", () =>
             {
-                store.SaveSetting("company", Required(company));
-                store.SaveSetting("companyContact", contact.Text.Trim());
+                var title = company.Text.Trim();
+                if (title.Length == 0) throw new InvalidOperationException("Firma ünvanı boş olamaz.");
+                if (phone.Text.Trim().Length == 0) throw new InvalidOperationException("Telefon numarası boş olamaz.");
+                if (address.Text.Trim().Length == 0) throw new InvalidOperationException("Adres boş olamaz.");
+                if (email.Text.Trim().Length > 0 && !IsEmail(email.Text.Trim()))
+                    throw new InvalidOperationException("Geçerli bir e-posta adresi yaz (ornek@firma.com).");
+                store.SaveSetting("company", title);
+                store.SaveSetting("companyPhone", phone.Text.Trim());
+                store.SaveSetting("companyAddress", address.Text.Trim());
+                store.SaveSetting("companyEmail", email.Text.Trim());
+                store.SaveSetting("companyWeb", web.Text.Trim());
+                store.SaveSetting("companyContact", string.Join(Environment.NewLine, new[]
+                {
+                    address.Text.Trim().ReplaceLineEndings(" "), "Tel: " + phone.Text.Trim(),
+                    email.Text.Trim(), web.Text.Trim()
+                }.Where(line => line.Length > 0)));
                 Toast("Firma bilgileri kaydedildi.");
             }, "SuccessButton", "")));
 

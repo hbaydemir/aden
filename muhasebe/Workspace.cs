@@ -122,12 +122,20 @@ public sealed partial class MainWindow
         Width = 1, Height = 22, Background = Paint(LineColor), VerticalAlignment = VerticalAlignment.Center
     };
 
-    private static FrameworkElement Field(string label, FrameworkElement input)
+    private static FrameworkElement Field(string label, FrameworkElement input, bool required = false, UIElement? aside = null)
     {
         var field = new StackPanel();
         var caption = Label(label, 12, "#374151", true);
-        caption.Margin = new Thickness(0, 0, 0, 6);
-        field.Children.Add(caption);
+        if (required) caption.Inlines.Add(new System.Windows.Documents.Run(" *") { Foreground = Paint("#DC2626") });
+        var head = new DockPanel { Margin = new Thickness(0, 0, 0, 6), LastChildFill = true };
+        if (aside is not null)
+        {
+            DockPanel.SetDock(aside, Dock.Right);
+            head.Children.Add(aside);
+        }
+        caption.VerticalAlignment = VerticalAlignment.Center;
+        head.Children.Add(caption);
+        field.Children.Add(head);
         field.Children.Add(input);
         System.Windows.Automation.AutomationProperties.SetName(input, label);
         return field;
@@ -155,9 +163,10 @@ public sealed partial class MainWindow
         foreach (var (element, span) in fields)
         {
             if (column + span > columns) { row++; column = 0; }
-            if (grid.RowDefinitions.Count <= row)
+            // Her form satırı = içerik satırı + (ilk satır hariç) önünde bir boşluk satırı.
+            while (grid.RowDefinitions.Count <= row * 2)
             {
-                if (row > 0) grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(Gap) });
+                if (grid.RowDefinitions.Count > 0) grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(Gap) });
                 grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             }
             Grid.SetRow(element, row * 2);

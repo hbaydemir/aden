@@ -16,9 +16,17 @@ public static class EntryValidation
             {
                 "product" => JsonSerializer.Deserialize<Product>(entry.Data) is { } product &&
                     Text(product.Code) && Text(product.Name) && product.Barcode is not null &&
-                    product.Price is >= 0 and <= 10_000_000_000 && product.Minimum >= 0,
+                    product.Price is >= 0 and <= 10_000_000_000 && product.Minimum >= 0 &&
+                    product.Barcode.Length <= 128 && product.Description is not null && product.Category is not null &&
+                    product.Cover is not null && product.DiscountedPrice is null or (>= 0 and <= 10_000_000_000) &&
+                    (product.Photos is null || product.Photos is { Length: <= 500 } && product.Photos.All(Text)),
+                "category" => JsonSerializer.Deserialize<ProductCategory>(entry.Data) is { } category &&
+                    Text(category.Id) && Text(category.Name) && category.Parent is not null && category.Parent != category.Id,
                 "account" => JsonSerializer.Deserialize<Account>(entry.Data) is { } account &&
-                    Text(account.Code) && Text(account.Name) && account.Contact is not null,
+                    Text(account.Code) && Text(account.Name) && account.Contact is not null &&
+                    account.Type is "Kurumsal" or "Bireysel" &&
+                    (account.Phones is null || account.Phones.All(p => p is not null && Text(p.Number))) &&
+                    (account.Emails is null || account.Emails.All(e => e is not null && Text(e.Address))),
                 "stock" => JsonSerializer.Deserialize<Stock>(entry.Data) is { } stock &&
                     Text(stock.Code) && stock.Reference is not null && stock.UnitCost is >= 0 and <= 10_000_000_000 &&
                     ((stock.Warehouse > 0 && stock.Shop == 0) ||

@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -122,29 +122,6 @@ public sealed partial class MainWindow : Window
     private void View(Panel panel, string heading, Func<object[]> data, double height = 300) =>
         views.Add((Grid(panel, heading, height), data));
 
-    private void AddProducts()
-    {
-        var panel = Tab("Ürünler");
-        var row = Form(panel);
-        var code = Input(row, "Ürün kodu");
-        var name = Input(row, "Ürün adı", width: 200);
-        var barcode = Input(row, "Barkod");
-        var price = Input(row, "Satış fiyatı (TL)", "0,00");
-        var minimum = Input(row, "Raf alt sınırı", "0");
-        Button(panel, "Ürünü kaydet / güncelle", () =>
-        {
-            var id = Required(code).ToUpperInvariant();
-            var bar = barcode.Text.Trim();
-            if (bar.Length > 0 && products.Values.Any(p => p.Code != id && p.Barcode == bar))
-                throw new InvalidOperationException("Barkod başka bir üründe kullanılıyor.");
-            Save("product", new Product(id, Required(name), bar, Money(price, true), Quantity(minimum, true)));
-        });
-        View(panel, "Ürün kartları", () => products.Values.OrderBy(p => p.Name).Select(p => new
-        {
-            Kod = p.Code, Ürün = p.Name, Barkod = p.Barcode, Satış = Format(p.Price), RafAltSınırı = p.Minimum
-        }).ToArray());
-    }
-
     private void AddStock()
     {
         var panel = Tab("Depo ve stok");
@@ -203,7 +180,55 @@ public sealed partial class MainWindow : Window
         Button(quantity, "− Adet", () => ChangeQuantity(-1));
         Button(quantity, "+ Adet", () => ChangeQuantity(1));
         Button(quantity, "Çıkar", () => ChangeQuantity(0));
-        var account = Input(Form(panel), "Cari kodu (isteğe bağlı)", width: 170);
+        var accountCode = "";
+        var accountButtonHost = new StackPanel();
+        DockPanel.SetDock(accountButtonHost, Dock.Right);
+        checkoutHeader.Children.Insert(0, accountButtonHost);
+        var accountButton = new Button { Content = "Cari kodu ekle", Margin = new Thickness(4) };
+        accountButtonHost.Children.Add(accountButton);
+        accountButton.Click += (_, _) => PickAccount();
+        accountButton.FontSize = 12;
+        accountButton.MinHeight = 42;
+        accountButton.Padding = new Thickness(8, 4, 8, 4);
+
+        void PickAccount()
+        {
+            var content = new StackPanel { Margin = new Thickness(14) };
+            var search = Input(Form(content), "Cari kodu veya müşteri adı", accountCode, 250);
+            var choices = new ComboBox { DisplayMemberPath = nameof(AccountChoice.Label), Margin = new Thickness(4) };
+            content.Children.Add(choices);
+            var dialog = new Window
+            {
+                Title = "Aden | Satış carisi", Owner = this, Width = 380, Height = 290,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner, ShowInTaskbar = false,
+                ResizeMode = ResizeMode.NoResize, Content = content
+            };
+            void SearchAccounts()
+            {
+                choices.ItemsSource = accounts.Values.Where(a => Matches(search.Text.Trim(), a.Code, a.Name))
+                    .OrderBy(a => a.Name).Select(a => new AccountChoice(a.Code, $"{a.Code} · {a.Name}")).ToArray();
+                choices.SelectedIndex = choices.Items.Count > 0 ? 0 : -1;
+            }
+            search.TextChanged += (_, _) => SearchAccounts();
+            SearchAccounts();
+            var actions = Form(content);
+            Button(actions, "Cari ekle", () =>
+            {
+                if (choices.SelectedItem is not AccountChoice selected)
+                    throw new InvalidOperationException("Bir cari seç.");
+                accountCode = selected.Code;
+                accountButton.Content = accountCode;
+                dialog.Close();
+            });
+            Button(actions, "Cariyi kaldır", () =>
+            {
+                accountCode = "";
+                accountButton.Content = "Cari kodu ekle";
+                dialog.Close();
+            });
+            dialog.Loaded += (_, _) => search.Focus();
+            dialog.ShowDialog();
+        }
         var split = new StackPanel { Margin = new Thickness(16) };
         Window? splitWindow = null;
         var row = Form(split);
@@ -235,7 +260,8 @@ public sealed partial class MainWindow : Window
         total.FontWeight = FontWeights.SemiBold;
         total.TextWrapping = TextWrapping.Wrap;
         checkoutFooter.Children.Add(new Border { Child = total, Background = Paint("#E9EFFF"), CornerRadius = new CornerRadius(10), Padding = new Thickness(8) });
-        var actions = Form(checkoutFooter);
+        var actions = new System.Windows.Controls.Primitives.UniformGrid { Columns = 2, Rows = 2 };
+        checkoutFooter.Children.Add(actions);
         Button(actions, "Nakit", () => CompleteSingle("Nakit")).Style = (Style)FindResource("PrimaryButton");
         Button(actions, "Kredi kartı", () => CompleteSingle("Kart")).Style = (Style)FindResource("PrimaryButton");
         Button(actions, "Vadeli", () => CompleteSingle("Vadeli"));
@@ -245,7 +271,7 @@ public sealed partial class MainWindow : Window
             splitBalance.Text = $"Toplam {Format(Sum(basket))}  ·  Kalan {Format(Sum(basket) - payments.Sum(p => p.Amount))}";
         payments.CollectionChanged += (_, _) => UpdateSplitBalance();
         Button(split, "Parçalı satışı tamamla", () => CompleteSale(payments.ToArray())).Style = (Style)FindResource("PrimaryButton");
-        Button(checkoutFooter, "Parçalı ödeme", () =>
+        Button(actions, "Parçalı ödeme", () =>
         {
             if (basket.Count == 0) throw new InvalidOperationException("Sepete ürün ekle.");
             UpdateSplitBalance();
@@ -283,9 +309,9 @@ public sealed partial class MainWindow : Window
             if (basket.Count == 0 || tender.Sum(p => p.Amount) != Sum(basket))
                 throw new InvalidOperationException("Sepet ve ödeme toplamını kontrol et.");
             foreach (var group in basket.GroupBy(line => line.Code))
-                if (stock.GetValueOrDefault(group.Key).Shop < group.Sum(line => line.Quantity))
+                if (!products.ContainsKey(group.Key) || stock.GetValueOrDefault(group.Key).Shop < group.Sum(line => line.Quantity))
                     throw new InvalidOperationException($"Dükkân stoku yetersiz: {group.Key}");
-            var id = account.Text.Trim().ToUpperInvariant();
+            var id = accountCode;
             if (tender.Any(p => p.Method == "Vadeli") && id.Length == 0)
                 throw new InvalidOperationException("Vadeli satış için cari kodu gir.");
             if (id.Length > 0 && !accounts.ContainsKey(id))
@@ -293,7 +319,8 @@ public sealed partial class MainWindow : Window
             Save("sale", new Sale(id, basket.ToArray(), tender));
             basket.Clear();
             payments.Clear();
-            account.Clear();
+            accountCode = "";
+            accountButton.Content = "Cari kodu ekle";
             amount.Clear();
             Totals();
             splitWindow?.Close();
@@ -368,110 +395,6 @@ public sealed partial class MainWindow : Window
         };
     }
 
-    private void AddQuotes()
-    {
-        var panel = Tab("Teklifler");
-        var row = Form(panel);
-        var customer = Input(row, "Müşteri / unvan", width: 220);
-        var contact = Input(row, "İletişim / adres", width: 220);
-        ProductPicker(panel, quoteLines);
-        var lines = Grid(panel, "Teklif kalemleri", 150);
-        lines.ItemsSource = quoteLines;
-        var list = Grid(panel, "Kayıtlı teklifler", 200);
-        views.Add((list, () => Read<Quote>("quote").Reverse().Select(q => new QuoteRow(q.Entry.Id,
-            q.Value.Customer, q.Entry.CreatedAt.LocalDateTime, Format(Sum(q.Value.Lines)))).ToArray()));
-        var buttons = Form(panel);
-        Button(buttons, "Kalemi çıkar", () => { if (lines.SelectedItem is Line line) quoteLines.Remove(line); });
-        Button(buttons, "Teklifi kaydet", () =>
-        {
-            if (quoteLines.Count == 0) throw new InvalidOperationException("En az bir ürün ekle.");
-            Save("quote", new Quote(Required(customer), contact.Text.Trim(), quoteLines.ToArray()));
-            quoteLines.Clear();
-        });
-        Button(buttons, "Teklifi satış sepetine aktar", () =>
-        {
-            if (list.SelectedItem is not QuoteRow selected) throw new InvalidOperationException("Teklif seç.");
-            if (basket.Count > 0 || payments.Count > 0)
-                throw new InvalidOperationException("Aktarmadan önce mevcut satış sepetini tamamla veya boşalt.");
-            var quote = Read<Quote>("quote").Single(q => q.Entry.Id == selected.No).Value;
-            foreach (var line in quote.Lines) basket.Add(line);
-            Totals();
-            tabs.SelectedIndex = 2;
-        });
-        var export = Button(buttons, "PDF olarak dışa aktar", () =>
-        {
-            if (list.SelectedItem is not QuoteRow selected) throw new InvalidOperationException("Teklif seç.");
-            var quote = Read<Quote>("quote").Single(q => q.Entry.Id == selected.No).Value;
-            var dialog = new SaveFileDialog
-            {
-                Title = "Teklifi PDF olarak kaydet", Filter = "PDF dosyası (*.pdf)|*.pdf",
-                DefaultExt = ".pdf", AddExtension = true, OverwritePrompt = true,
-                FileName = $"Aden-Teklif-{selected.No.ToString("N")[..12]}"
-            };
-            if (dialog.ShowDialog(this) != true) return;
-            QuotePdf.Save(dialog.FileName, selected.No, selected.Tarih, quote);
-            status.Text = $"PDF kaydedildi · {System.IO.Path.GetFileName(dialog.FileName)}";
-        });
-        export.Style = (Style)FindResource("PrimaryButton");
-        Button(buttons, "Seçili teklifi yazdır", () =>
-        {
-            if (list.SelectedItem is not QuoteRow selected) throw new InvalidOperationException("Teklif seç.");
-            var quote = Read<Quote>("quote").Single(q => q.Entry.Id == selected.No).Value;
-            var document = new FlowDocument { PagePadding = new Thickness(45), FontFamily = FontFamily };
-            var logo = store.Setting("quoteLogo");
-            if (logo.Length > 0)
-            {
-                var bitmap = new BitmapImage();
-                bitmap.BeginInit();
-                bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                bitmap.StreamSource = new System.IO.MemoryStream(Convert.FromBase64String(logo));
-                bitmap.DecodePixelWidth = 300;
-                bitmap.EndInit();
-                document.Blocks.Add(new BlockUIContainer(new Image
-                {
-                    Source = bitmap, Width = 145, MaxHeight = 75,
-                    Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left
-                }));
-            }
-            document.Blocks.Add(new Paragraph(new Bold(new Run(store.Setting("company", "Aden")))) { FontSize = 25 });
-            document.Blocks.Add(new Paragraph(new Run(store.Setting("companyContact"))));
-            document.Blocks.Add(new Paragraph(new Bold(new Run("SATIŞ TEKLİFİ"))));
-            document.Blocks.Add(new Paragraph(new Run($"{selected.Tarih:d}   •   {selected.No}\n{quote.Customer}\n{quote.Contact}")));
-            foreach (var line in quote.Lines)
-                document.Blocks.Add(new Paragraph(new Run($"{line.Name}   × {line.Quantity}   •   {Format(line.UnitPrice * line.Quantity)}")));
-            document.Blocks.Add(new Paragraph(new Bold(new Run($"Toplam {selected.Toplam}"))));
-            Print(document, "Aden satış teklifi");
-        });
-    }
-
-    private record QuoteRow(Guid No, string Müşteri, DateTime Tarih, string Toplam);
-
-    private void AddAccounts()
-    {
-        var panel = Tab("Cariler");
-        var row = Form(panel);
-        var code = Input(row, "Cari kodu");
-        var name = Input(row, "Ad / unvan", width: 200);
-        var contact = Input(row, "İletişim", width: 200);
-        Button(row, "Cariyi kaydet / güncelle", () =>
-            Save("account", new Account(Required(code).ToUpperInvariant(), Required(name), contact.Text.Trim())));
-        View(panel, "Cari bakiyeler", () => accounts.Values.Select(a => new
-        {
-            Kod = a.Code, Cari = a.Name, İletişim = a.Contact,
-            Bakiye = Format(Read<Sale>("sale").Where(s => s.Value.Account == a.Code)
-                .Sum(s => s.Value.Payments.Where(p => p.Method == "Vadeli").Sum(p => p.Amount))
-                - Read<Cash>("cash").Where(c => c.Value.Account == a.Code).Sum(c => c.Value.Amount))
-        }).ToArray());
-        View(panel, "Cari hareketler", () =>
-            Read<Sale>("sale").Where(s => s.Value.Payments.Any(p => p.Method == "Vadeli"))
-                .Select(s => new { Tarih = s.Entry.CreatedAt.LocalDateTime, Cari = s.Value.Account,
-                    İşlem = "Vadeli satış", Tutar = Format(s.Value.Payments.Where(p => p.Method == "Vadeli").Sum(p => p.Amount)) })
-                .Concat(Read<Cash>("cash").Where(c => c.Value.Account.Length > 0).Select(c =>
-                    new { Tarih = c.Entry.CreatedAt.LocalDateTime, Cari = c.Value.Account,
-                        İşlem = c.Value.Category, Tutar = Format(c.Value.Amount) }))
-                .OrderByDescending(item => item.Tarih).ToArray(), 185);
-    }
-
     private void AddCash()
     {
         var panel = Tab("Kasa ve gelir gider");
@@ -538,6 +461,20 @@ public sealed partial class MainWindow : Window
                 new { Kalem = "Gider", Tutar = Format(-cash.Where(movement => movement.Category == "Gider").Sum(movement => movement.Amount)) }
             };
         }
+        Button(row, "Satışları Excel'e aktar", () =>
+        {
+            if (start.SelectedDate is not DateTime from || end.SelectedDate is not DateTime to || to < from)
+                throw new InvalidOperationException("Geçerli bir tarih aralığı seç.");
+            var dialog = new SaveFileDialog
+            {
+                Title = "Satış raporunu kaydet", Filter = "Excel çalışma kitabı (*.xlsx)|*.xlsx",
+                DefaultExt = ".xlsx", AddExtension = true, FileName = $"Aden-Satis-{from:yyyyMMdd}-{to:yyyyMMdd}"
+            };
+            if (dialog.ShowDialog(this) != true) return;
+            SalesWorkbook.Save(dialog.FileName, Read<Sale>("sale").Where(sale =>
+                sale.Entry.CreatedAt.LocalDateTime.Date >= from && sale.Entry.CreatedAt.LocalDateTime.Date <= to));
+            status.Text = "Satış raporu kaydedildi.";
+        }).Style = (Style)FindResource("PrimaryButton");
         views.Add((grid, Report));
         start.SelectedDateChanged += (_, _) => grid.ItemsSource = Report();
         end.SelectedDateChanged += (_, _) => grid.ItemsSource = Report();
@@ -559,7 +496,7 @@ public sealed partial class MainWindow : Window
         AddUpdateSettings(panel);
         var profile = Form(panel);
         var company = Input(profile, "Firma unvanı", store.Setting("company", "Aden"), 240);
-        var contact = Input(profile, "Antet iletişim / adres", store.Setting("companyContact"), 300);
+        var contact = Multiline(profile, "Firma adresi ve iletişim bilgileri", store.Setting("companyContact"), 360);
         Button(profile, "Firma bilgilerini kaydet", () =>
         {
             store.SaveSetting("company", Required(company));
@@ -576,7 +513,7 @@ public sealed partial class MainWindow : Window
             BitmapDecoder.Create(image, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
             store.SaveSetting("quoteLogo", Convert.ToBase64String(bytes));
         });
-        Button(profile, "Logoyu kaldır", () => store.SaveSetting("quoteLogo", ""));
+        Button(profile, "Varsayılan Aden logosuna dön", () => store.SaveSetting("quoteLogo", ""));
         var enabled = new CheckBox
         {
             Content = "Sunucu eşitlemesini aç", IsChecked = store.Setting("mode") == "sync", Margin = new Thickness(4)
@@ -662,8 +599,16 @@ public sealed partial class MainWindow : Window
         products.Clear();
         accounts.Clear();
         stock.Clear();
-        foreach (var item in Read<Product>("product")) products[item.Value.Code] = item.Value;
-        foreach (var item in Read<Account>("account")) accounts[item.Value.Code] = item.Value;
+        foreach (var item in Read<Product>("product"))
+        {
+            if (item.Value.Archived) products.Remove(item.Value.Code);
+            else products[item.Value.Code] = item.Value;
+        }
+        foreach (var item in Read<Account>("account"))
+        {
+            if (item.Value.Archived) accounts.Remove(item.Value.Code);
+            else accounts[item.Value.Code] = item.Value;
+        }
         foreach (var item in Read<Stock>("stock")) Move(item.Value.Code, item.Value.Warehouse, item.Value.Shop);
         foreach (var sale in Read<Sale>("sale"))
             foreach (var line in sale.Value.Lines) Move(line.Code, 0, -line.Quantity);
@@ -708,17 +653,3 @@ public sealed partial class MainWindow : Window
     private string Format(long amount) => (amount / 100m).ToString("C2", culture);
     private void Totals() => total.Text = $"Toplam {Format(Sum(basket))}\nKalan {Format(Sum(basket) - payments.Sum(p => p.Amount))}";
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

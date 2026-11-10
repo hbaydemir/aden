@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [Parameter(Mandatory)][string]$OutputDirectory
 )
@@ -19,6 +19,5 @@ if (Get-ChildItem -LiteralPath $app -Recurse -File | Where-Object { $_.Name -mat
 
 & (Join-Path $tools 'vpk.exe') pack --packId Aden.Windows --packVersion $Version --packTitle Aden --packAuthors Aden `
     --channel win-x64 --runtime win-x64 --mainExe Aden.Desktop.exe --packDir $app --outputDir $destination `
-    --delta None --icon (Join-Path $repo 'muhasebe/Assets/aden-icon-logo.ico') --shortcuts StartMenuRoot
+    --delta None --icon (Join-Path $repo 'muhasebe/Assets/aden-icon-logo.ico') --shortcuts 'Desktop,StartMenuRoot'
 if ($LASTEXITCODE -ne 0) { throw 'Aden kurulum paketi oluşturulamadı.' }
-

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Automation;
@@ -147,8 +147,11 @@ public sealed partial class MainWindow
         layout.Children.Add(checkoutCard);
         var header = Label("Satış sepeti", 20, bold: true);
         header.Margin = new Thickness(4, 0, 4, 4);
-        DockPanel.SetDock(header, Dock.Top);
-        checkout.Children.Add(header);
+        var headerRow = new DockPanel();
+        headerRow.Children.Add(header);
+        DockPanel.SetDock(headerRow, Dock.Top);
+        checkout.Children.Add(headerRow);
+        checkoutHeader = headerRow;
 
         var footer = new StackPanel();
         footer.Margin = new Thickness(0, 8, 0, 0);
@@ -161,6 +164,7 @@ public sealed partial class MainWindow
         return details;
     }
 
+    private DockPanel checkoutHeader = null!;
     private StackPanel checkoutFooter = null!;
 
     private void Columns(DataGrid grid, params (string Heading, string Path, double Weight)[] columns)
@@ -171,7 +175,7 @@ public sealed partial class MainWindow
             {
                 Header = column.Heading, Binding = new Binding(column.Path)
                 {
-                    Converter = column.Path is "UnitPrice" or "Amount" ? new MoneyConverter(culture) : null
+                    Converter = column.Path is "UnitPrice" or "Amount" or "Price" ? new MoneyConverter(culture) : null
                 },
                 Width = new DataGridLength(column.Weight, DataGridLengthUnitType.Star)
             });
@@ -185,5 +189,3 @@ public sealed partial class MainWindow
             Binding.DoNothing;
     }
 }
-
-

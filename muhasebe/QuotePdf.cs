@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Windows;
 using MigraDoc.DocumentObjectModel;
@@ -14,7 +14,8 @@ public static class QuotePdf
     private static readonly Color Blue = Color.FromRgb(29, 64, 175);
     private static readonly Color Pale = Color.FromRgb(235, 241, 255);
 
-    public static void Save(string path, Guid id, DateTime date, Quote quote)
+    public static void Save(string path, Guid id, DateTime date, Quote quote,
+        string company = "Aden", string companyContact = "", string configuredLogo = "")
     {
         var document = new Document();
         document.Info.Title = $"Aden Satış Teklifi {id:N}";
@@ -33,15 +34,25 @@ public static class QuotePdf
         section.PageSetup.HeaderDistance = Unit.FromCentimeter(1.3);
         section.PageSetup.FooterDistance = Unit.FromCentimeter(0.85);
 
-        var resource = Application.GetResourceStream(
-            new Uri("/Aden.Desktop;component/Assets/aden-icon-text-logo.png", UriKind.Relative))
-            ?? throw new InvalidOperationException("Aden logosu yüklenemedi.");
-        using var logoStream = resource.Stream;
         using var logo = new MemoryStream();
-        logoStream.CopyTo(logo);
+        if (string.IsNullOrWhiteSpace(configuredLogo))
+        {
+            var resource = Application.GetResourceStream(
+                new Uri("/Aden.Desktop;component/Assets/aden-icon-text-logo.png", UriKind.Relative))
+                ?? throw new InvalidOperationException("Aden logosu yüklenemedi.");
+            using var logoStream = resource.Stream;
+            logoStream.CopyTo(logo);
+        }
+        else
+        {
+            logo.Write(Convert.FromBase64String(configuredLogo));
+        }
+        logo.Position = 0;
+        var frame = System.Windows.Media.Imaging.BitmapDecoder.Create(logo,
+            System.Windows.Media.Imaging.BitmapCreateOptions.None,
+            System.Windows.Media.Imaging.BitmapCacheOption.OnLoad).Frames[0];
         var image = section.Headers.Primary.AddImage("base64:" + Convert.ToBase64String(logo.ToArray()));
-        image.Width = Unit.FromCentimeter(4);
-
+        image.Width = Unit.FromCentimeter(Math.Min(4.0, 1.35 * frame.PixelWidth / frame.PixelHeight));
         var title = section.AddParagraph("SATIŞ TEKLİFİ");
         title.Format.Font.Size = 24;
         title.Format.Font.Bold = true;
@@ -49,16 +60,13 @@ public static class QuotePdf
         title.Format.SpaceAfter = Unit.FromPoint(8);
         var details = section.AddParagraph($"Teklif no {id.ToString("N")[..12].ToUpperInvariant()}  |  {date.ToString("dd.MM.yyyy", Turkish)}");
         details.Format.SpaceAfter = Unit.FromPoint(15);
-        var customer = section.AddParagraph();
-        customer.AddFormattedText("Müşteri  ", TextFormat.Bold);
-        customer.AddText(quote.Customer);
-        if (!string.IsNullOrWhiteSpace(quote.Contact))
-        {
-            customer.AddLineBreak();
-            customer.AddText(quote.Contact);
-        }
-        customer.Format.SpaceAfter = Unit.FromPoint(14);
-
+        var parties = section.AddTable();
+        parties.AddColumn(Unit.FromCentimeter(8.75));
+        parties.AddColumn(Unit.FromCentimeter(8.75));
+        var partyRow = parties.AddRow();
+        AddParty(partyRow.Cells[0], "TEKLİFİ VEREN", company, companyContact);
+        AddParty(partyRow.Cells[1], "MÜŞTERİ", quote.Customer, quote.Contact);
+        section.AddParagraph().Format.SpaceAfter = Unit.FromPoint(6);
         var table = section.AddTable();
         table.Borders.Color = Color.FromRgb(220, 229, 243);
         table.Borders.Width = Unit.FromPoint(0.5);
@@ -118,6 +126,22 @@ public static class QuotePdf
         finally
         {
             File.Delete(temporary);
+        }
+    }
+
+    private static void AddParty(Cell cell, string label, string name, string contact)
+    {
+        var heading = cell.AddParagraph(label);
+        heading.Format.Font.Color = Blue;
+        heading.Format.Font.Bold = true;
+        heading.Format.SpaceAfter = Unit.FromPoint(4);
+        var paragraph = cell.AddParagraph();
+        paragraph.AddFormattedText(name, TextFormat.Bold);
+        if (contact.Length == 0) return;
+        foreach (var line in contact.Replace("\\n", "\n").ReplaceLineEndings("\n").Split('\n'))
+        {
+            paragraph.AddLineBreak();
+            paragraph.AddText(line);
         }
     }
 

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
 namespace Aden;
 
@@ -25,7 +25,9 @@ public static class EntryValidation
                      (stock.Warehouse < 0 && (long)stock.Warehouse + stock.Shop == 0)),
                 "sale" => JsonSerializer.Deserialize<Sale>(entry.Data) is { } sale && SaleIsValid(sale),
                 "quote" => JsonSerializer.Deserialize<Quote>(entry.Data) is { } quote &&
-                    Text(quote.Customer) && quote.Contact is not null && LinesAreValid(quote.Lines),
+                    QuoteIsValid(quote),
+                "quote-revision" => JsonSerializer.Deserialize<QuoteRevision>(entry.Data) is { } revision &&
+                    revision.QuoteId != Guid.Empty && (revision.Value is null || QuoteIsValid(revision.Value)),
                 "cash" => JsonSerializer.Deserialize<Cash>(entry.Data) is { } cash &&
                     Text(cash.Detail) && cash.Account is not null && cash.Category switch
                     {
@@ -40,6 +42,9 @@ public static class EntryValidation
         }
         catch (JsonException) { return false; }
     }
+
+    private static bool QuoteIsValid(Quote quote) =>
+        Text(quote.Customer) && quote.Contact is not null && LinesAreValid(quote.Lines);
 
     private static bool SaleIsValid(Sale sale) =>
         sale.Account is not null && LinesAreValid(sale.Lines) &&
@@ -56,4 +61,3 @@ public static class EntryValidation
 
     private static bool Text(string? value) => !string.IsNullOrWhiteSpace(value);
 }
-

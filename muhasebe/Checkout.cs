@@ -94,9 +94,10 @@ public sealed partial class MainWindow
             if (payments.Count > 0)
                 throw new InvalidOperationException("Sepeti değiştirmek için önce kayıtlı ödeme parçalarını kaldır.");
             var quantity = Quantity(count);
-            var existing = basket.FirstOrDefault(line => line.Code == product.Code && line.UnitPrice == product.SalePrice);
+            var priced = LineFor(product, quantity);
+            var existing = basket.FirstOrDefault(line => line.Code == product.Code && line.UnitPrice == priced.UnitPrice && line.Discount == 0);
             if (existing is null)
-                basket.Add(new(product.Code, product.Name, quantity, product.SalePrice));
+                basket.Add(priced);
             else
             {
                 if ((long)existing.Quantity + quantity > 1_000_000)
@@ -190,7 +191,7 @@ public sealed partial class MainWindow
                     CornerRadius = new CornerRadius(6), Padding = new Thickness(7, 2, 7, 3), Margin = new Thickness(8),
                     HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
                     Background = Paint("#DC2626"),
-                    Child = Label($"−%{DiscountRate(product.Price, product.SalePrice).ToString("0.#", culture)}", 11, "#FFFFFF", true)
+                    Child = Label($"−%{DiscountRate(ListNet(product), SaleNet(product)).ToString("0.#", culture)}", 11, "#FFFFFF", true)
                 });
             }
             card.Children.Add(photo);
@@ -202,12 +203,12 @@ public sealed partial class MainWindow
             name.ToolTip = product.Name;
             info.Children.Add(name);
             var prices = new WrapPanel { Margin = new Thickness(0, 2, 0, 0) };
-            var price = Label(Format(product.SalePrice), 16, discounted ? "#DC2626" : "#2563EB", true);
+            var price = Label(Format(SaleGross(product)), 16, discounted ? "#DC2626" : "#2563EB", true);
             price.Margin = new Thickness(0, 0, 6, 0);
             prices.Children.Add(price);
             if (discounted)
             {
-                var old = Label(Format(product.Price), 11, Muted);
+                var old = Label(Format(ListGross(product)), 11, Muted);
                 old.TextDecorations = TextDecorations.Strikethrough;
                 old.VerticalAlignment = VerticalAlignment.Center;
                 prices.Children.Add(old);
@@ -215,7 +216,7 @@ public sealed partial class MainWindow
             info.Children.Add(prices);
             card.Children.Add(info);
             tile.Content = card;
-            AutomationProperties.SetName(tile, $"{product.Name}, {Format(product.SalePrice)}, dükkânda {available} adet");
+            AutomationProperties.SetName(tile, $"{product.Name}, {Format(SaleGross(product))}, dükkânda {available} adet");
             return tile;
         }
 
@@ -295,6 +296,12 @@ public sealed partial class MainWindow
         paidRow.Children.Add(paidValue);
         paidRow.Children.Add(Label("Alınan ödeme", 13, Muted));
         footer.Children.Add(paidRow);
+        var netRow = SummaryRow("Ara toplam (KDV hariç)", out var netValue);
+        netRow.Margin = new Thickness(0);
+        footer.Children.Add(netRow);
+        var vatRow = SummaryRow("KDV", out var cartVatValue);
+        vatRow.Margin = new Thickness(0, 4, 0, SmallGap);
+        footer.Children.Add(vatRow);
         var totalRow = new DockPanel { Margin = new Thickness(0, 0, 0, Gap) };
         var totalValue = Label(Format(0), 30, bold: true);
         DockPanel.SetDock(totalValue, Dock.Right);
@@ -334,6 +341,9 @@ public sealed partial class MainWindow
             var sum = Sum(basket);
             var paid = payments.Sum(p => p.Amount);
             totalValue.Text = Format(sum);
+            var breakdown = Summarize(basket);
+            netValue.Text = Format(breakdown.Subtotal - breakdown.Discount);
+            cartVatValue.Text = Format(breakdown.Vat);
             countText.Text = basket.Sum(l => (long)l.Quantity).ToString(culture);
             paidRow.Visibility = payments.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             paidValue.Text = $"{Format(paid)} · Kalan {Format(sum - paid)}";
@@ -371,7 +381,7 @@ public sealed partial class MainWindow
             var name = Label(line.Name, 14, bold: true);
             name.TextTrimming = TextTrimming.CharacterEllipsis;
             text.Children.Add(name);
-            var unit = Label($"{Format(line.UnitPrice)} / adet", 12, Muted);
+            var unit = Label($"{Format(line.UnitPrice)} / adet" + (line.Vat is int rate ? $" · KDV %{rate}" : ""), 12, Muted);
             unit.Margin = new Thickness(0, 2, 0, 0);
             text.Children.Add(unit);
             row.Children.Add(text);

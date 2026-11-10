@@ -18,7 +18,7 @@ public static class EntryValidation
                     Text(product.Code) && Text(product.Name) && product.Barcode is not null &&
                     product.Price is >= 0 and <= 10_000_000_000 && product.Minimum >= 0 &&
                     product.Barcode.Length <= 128 && product.Description is not null && product.Category is not null &&
-                    product.Cover is not null && product.DiscountedPrice is null or (>= 0 and <= 10_000_000_000) &&
+                    product.Cover is not null && product.DiscountedPrice is null or (>= 0 and <= 10_000_000_000) && product.Vat is null or (>= 0 and <= 100) &&
                     (product.Photos is null || product.Photos is { Length: <= 500 } && product.Photos.All(Text)),
                 "category" => JsonSerializer.Deserialize<ProductCategory>(entry.Data) is { } category &&
                     Text(category.Id) && Text(category.Name) && category.Parent is not null && category.Parent != category.Id,
@@ -65,7 +65,8 @@ public static class EntryValidation
     private static bool LinesAreValid(Line[]? lines) =>
         lines is { Length: > 0 and <= 200 } && lines.All(l =>
             l is not null && Text(l.Code) && Text(l.Name) && l.Quantity is > 0 and <= 1_000_000 &&
-            l.UnitPrice is >= 0 and <= 10_000_000_000);
+            l.UnitPrice is >= 0 and <= 10_000_000_000 && l.Vat is null or (>= 0 and <= 100) &&
+            l.Net is null or (>= 0 and <= 10_000_000_000) && l.Discount is >= 0 and <= 100);
 
     private static bool Text(string? value) => !string.IsNullOrWhiteSpace(value);
 }

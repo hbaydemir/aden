@@ -15,7 +15,8 @@ public static class QuotePdf
     private static readonly Color Pale = Color.FromRgb(235, 241, 255);
 
     public static void Save(string path, Guid id, DateTime date, Quote quote,
-        string company = "Aden", string companyContact = "", string configuredLogo = "")
+        string company = "Aden", string companyContact = "", string configuredLogo = "",
+        (long Subtotal, long Discount, long Vat, long Total)? totals = null)
     {
         var document = new Document();
         document.Info.Title = $"Aden Satış Teklifi {id:N}";
@@ -72,16 +73,18 @@ public static class QuotePdf
         table.Borders.Width = Unit.FromPoint(0.5);
         table.TopPadding = Unit.FromPoint(6);
         table.BottomPadding = Unit.FromPoint(6);
-        table.AddColumn(Unit.FromCentimeter(8.4));
-        table.AddColumn(Unit.FromCentimeter(1.7)).Format.Alignment = ParagraphAlignment.Right;
-        table.AddColumn(Unit.FromCentimeter(3.7)).Format.Alignment = ParagraphAlignment.Right;
-        table.AddColumn(Unit.FromCentimeter(3.7)).Format.Alignment = ParagraphAlignment.Right;
+        table.AddColumn(Unit.FromCentimeter(6.6));
+        table.AddColumn(Unit.FromCentimeter(1.4)).Format.Alignment = ParagraphAlignment.Right;
+        table.AddColumn(Unit.FromCentimeter(2.9)).Format.Alignment = ParagraphAlignment.Right;
+        table.AddColumn(Unit.FromCentimeter(1.5)).Format.Alignment = ParagraphAlignment.Right;
+        table.AddColumn(Unit.FromCentimeter(1.3)).Format.Alignment = ParagraphAlignment.Right;
+        table.AddColumn(Unit.FromCentimeter(3.8)).Format.Alignment = ParagraphAlignment.Right;
         var heading = table.AddRow();
         heading.HeadingFormat = true;
         heading.Shading.Color = Blue;
         heading.Format.Font.Color = Colors.White;
         heading.Format.Font.Bold = true;
-        string[] columns = ["Ürün", "Adet", "Birim fiyat", "Tutar"];
+        string[] columns = ["Ürün", "Adet", "Birim (KDV hariç)", "İskonto", "KDV", "Tutar (KDV dahil)"];
         for (var index = 0; index < columns.Length; index++)
             heading.Cells[index].AddParagraph(columns[index]);
 
@@ -92,17 +95,33 @@ public static class QuotePdf
             if (index % 2 == 0) row.Shading.Color = Pale;
             row.Cells[0].AddParagraph(line.Name);
             row.Cells[1].AddParagraph(line.Quantity.ToString(Turkish));
-            row.Cells[2].AddParagraph(Money(line.UnitPrice));
-            row.Cells[3].AddParagraph(Money(line.UnitPrice * line.Quantity));
+            row.Cells[2].AddParagraph(Money(line.Net ?? line.UnitPrice));
+            row.Cells[3].AddParagraph(line.Discount > 0 ? "%" + line.Discount.ToString("0.##", Turkish) : "—");
+            row.Cells[4].AddParagraph("%" + (line.Vat ?? 0).ToString(Turkish));
+            row.Cells[5].AddParagraph(Money(line.UnitPrice * line.Quantity));
         }
 
-        var total = table.AddRow();
-        total.Shading.Color = Pale;
-        total.Format.Font.Bold = true;
-        total.Format.Font.Color = Blue;
-        total.Cells[0].MergeRight = 2;
-        total.Cells[0].AddParagraph("Genel toplam");
-        total.Cells[3].AddParagraph(Money(quote.Lines.Sum(line => line.UnitPrice * line.Quantity)));
+        var sums = totals ?? (0, 0, 0, quote.Lines.Sum(line => line.UnitPrice * line.Quantity));
+        void Total(string caption, string value, bool strong = false)
+        {
+            var total = table.AddRow();
+            total.Borders.Visible = false;
+            total.Format.Font.Bold = strong;
+            if (strong)
+            {
+                total.Shading.Color = Pale;
+                total.Format.Font.Color = Blue;
+                total.Format.Font.Size = 12;
+            }
+            total.Cells[0].MergeRight = 4;
+            total.Cells[0].Format.Alignment = ParagraphAlignment.Right;
+            total.Cells[0].AddParagraph(caption);
+            total.Cells[5].AddParagraph(value);
+        }
+        Total("Ara toplam", Money(sums.Subtotal));
+        Total("İskonto", sums.Discount > 0 ? "−" + Money(sums.Discount) : Money(0));
+        Total("KDV", Money(sums.Vat));
+        Total("Genel toplam", Money(sums.Total), true);
 
         var footer = section.Footers.Primary.AddParagraph("ADEN   /   SATIŞ TEKLİFİ");
         footer.Format.Font.Size = 8;

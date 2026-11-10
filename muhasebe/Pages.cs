@@ -62,18 +62,58 @@ public sealed partial class MainWindow
             var count = Text("1");
             var cost = Text("0,00");
             var reference = Text();
-            var form = Form(2, F(Field("Ürün", product), 2), F(Field("Adet", count)), F(Field("Birim alış fiyatı (TL)", cost)),
-                F(Field("Belge no / tedarikçi", reference), 2));
-            var modal = ShowModal("Mal kabul", form, 560, subtitle: "Gelen ürünler depo stokuna eklenir.");
+            var exclusive = new CheckBox { Content = "KDV hariç fiyat gireceğim", FontSize = 12, MinHeight = 0 };
+            var netCost = Text();
+            var vat = VatBox(DefaultVat);
+            System.Windows.Automation.AutomationProperties.SetName(netCost, "KDV hariç birim alış fiyatı");
+            var netRow = Form(2, F(Field("KDV hariç birim alış fiyatı (TL)", netCost)), F(Field("KDV oranı (%)", vat)));
+            netRow.Margin = new Thickness(0, 12, 0, 0);
+            netRow.Visibility = Visibility.Collapsed;
+            var hint = Label("", 12, Muted);
+            hint.Margin = new Thickness(0, SmallGap, 0, 0);
+            var costField = Field("Birim alış fiyatı (KDV dahil, TL)", cost, aside: exclusive);
+            void Recalculate()
+            {
+                if (exclusive.IsChecked != true) { hint.Text = ""; return; }
+                if (netCost.Text.Trim().Length > 0 && TryMoney(netCost.Text, out var net) &&
+                    int.TryParse(vat.Text.Trim().TrimStart('%'), out var rate) && rate is >= 0 and <= 100)
+                {
+                    var gross = WithVat(net, rate);
+                    cost.Text = (gross / 100m).ToString("N2", culture);
+                    hint.Text = $"{Format(net)} + %{rate} KDV ({Format(gross - net)}) = {Format(gross)} alış fiyatı (KDV dahil)";
+                }
+                else hint.Text = "KDV hariç fiyatı ve KDV oranını gir; KDV dahil alış fiyatı otomatik hesaplanır.";
+            }
+            exclusive.Checked += (_, _) => { netRow.Visibility = Visibility.Visible; cost.IsReadOnly = true; Recalculate(); netCost.Focus(); };
+            exclusive.Unchecked += (_, _) => { netRow.Visibility = Visibility.Collapsed; cost.IsReadOnly = false; Recalculate(); };
+            netCost.TextChanged += (_, _) => Recalculate();
+            vat.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent, new TextChangedEventHandler((_, _) => Recalculate()));
+            var costPanel = new StackPanel();
+            costPanel.Children.Add(costField);
+            costPanel.Children.Add(netRow);
+            costPanel.Children.Add(hint);
+            var form = Form(2, F(Field("Ürün", product), 2), F(Field("Adet", count)), F(Field("Belge no / tedarikçi", reference)),
+                F(costPanel, 2));
+            var modal = ShowModal("Mal kabul", form, 600, subtitle: "Gelen ürünler depo stokuna eklenir. Alış fiyatı varsayılan olarak KDV dahil girilir.");
             Append(modal.Footer, Act("Vazgeç", modal.Close));
             Append(modal.Footer, Act("Depoya ekle", () =>
             {
                 var item = ResolveProduct(product);
                 var amount = Quantity(count);
-                Save("stock", new Stock(item.Code, amount, 0, Money(cost, true), Required(reference)));
+                int? rate = null;
+                long? net = null;
+                if (exclusive.IsChecked == true)
+                {
+                    if (netCost.Text.Trim().Length == 0 || !TryMoney(netCost.Text, out var value))
+                        throw new InvalidOperationException("KDV hariç alış fiyatını 0,00 biçiminde gir.");
+                    rate = ReadVat(vat);
+                    net = value;
+                }
+                Save("stock", new Stock(item.Code, amount, 0, net is long n ? WithVat(n, rate!.Value) : Money(cost, true),
+                    Required(reference), rate, net));
                 modal.Close();
                 Toast($"{item.Name} · {amount} adet depoya eklendi.");
-            }, "SuccessButton", ""));
+            }, "SuccessButton", "\uE710"));
         }
 
         void Transfer(string? code)
@@ -388,6 +428,19 @@ public sealed partial class MainWindow
                 }.Where(line => line.Length > 0)));
                 Toast("Firma bilgileri kaydedildi.");
             }, "SuccessButton", "")));
+
+        var defaultVat = VatBox(DefaultVat);
+        defaultVat.Width = 160;
+        defaultVat.HorizontalAlignment = HorizontalAlignment.Left;
+        panel.Children.Add(SettingsCard("Vergi",
+            "Yeni ürünlerde KDV oranı bu değerle gelir; ürün kartında ürüne özel oran seçebilirsin. KDV oranı kayıtlı olmayan eski ürünler de bu oranı kullanır.",
+            Field("Varsayılan KDV oranı (%)", defaultVat),
+            Act("Kaydet", () =>
+            {
+                store.SaveSetting("defaultVat", ReadVat(defaultVat).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                Refresh();
+                Toast("Varsayılan KDV oranı kaydedildi.");
+            }, "SuccessButton", "\uE74E")));
 
         var preview = new Image { Height = 56, MaxWidth = 220, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left };
         void ShowLogo()

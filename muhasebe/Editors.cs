@@ -52,6 +52,12 @@ public sealed partial class MainWindow
         return text.Length > 0 && matches.Length == 1 ? matches[0] : throw new InvalidOperationException("Geçerli bir cari seç.");
     }
 
+    private Account? TryAccount(ComboBox box)
+    {
+        try { return box.Text.Trim().Length == 0 && box.SelectedItem is null ? null : ResolveAccount(box); }
+        catch (InvalidOperationException) { return null; }
+    }
+
     private void OnOpen(DataGrid grid, Action open) =>
         grid.MouseDoubleClick += (_, e) =>
         {
@@ -62,7 +68,7 @@ public sealed partial class MainWindow
     // ───────────── Ürünler ─────────────
 
     private sealed record ProductRow(ImageSource Thumb, string Code, string Name, string Category, string Barcode,
-        string Price, string Discount, long Shop);
+        string Net, string Vat, string Gross, string Discount, long Shop);
 
     private void AddProducts()
     {
@@ -89,15 +95,17 @@ public sealed partial class MainWindow
             Header = "", Width = new DataGridLength(56), CellTemplate = new DataTemplate { VisualTree = thumb }
         });
         Columns(grid, ("Kod", "Code", 0.8), ("Ürün", "Name", 2), ("Kategori", "Category", 1.3), ("Barkod", "Barcode", 1.2),
-            ("Satış fiyatı", "Price", 0.9), ("İndirimli", "Discount", 1.1), ("Dükkân stoku", "Shop", 0.8));
+            ("KDV hariç", "Net", 0.9), ("KDV", "Vat", 0.5), ("KDV dahil", "Gross", 0.9), ("İndirimli (dahil)", "Discount", 1.2),
+            ("Stok", "Shop", 0.6));
         object[] Filter() => products.Values
             .Select(p => (Product: p, Category: CategoryPath(CategoryOf(p).Id)))
             .Where(x => Matches(search.Text.Trim(), x.Product.Code, x.Product.Name, x.Product.Barcode, x.Category))
             .OrderBy(x => x.Product.Name, StringComparer.Create(culture, true))
             .Select(x => new ProductRow(Photo(CoverOf(x.Product), 96), x.Product.Code, x.Product.Name, x.Category,
-                x.Product.Barcode == DefaultBarcode ? "—" : x.Product.Barcode, Format(x.Product.Price),
+                x.Product.Barcode == DefaultBarcode ? "—" : x.Product.Barcode, Format(ListNet(x.Product)),
+                "%" + VatOf(x.Product).ToString(culture), Format(ListGross(x.Product)),
                 x.Product.SalePrice < x.Product.Price
-                    ? $"{Format(x.Product.SalePrice)}  (−%{DiscountRate(x.Product.Price, x.Product.SalePrice).ToString("0.##", culture)})" : "",
+                    ? $"{Format(SaleGross(x.Product))}  (−%{DiscountRate(ListNet(x.Product), SaleNet(x.Product)).ToString("0.##", culture)})" : "",
                 stock.GetValueOrDefault(x.Product.Code).Shop)).ToArray();
         views.Add((grid, Filter));
         search.TextChanged += (_, _) => grid.ItemsSource = Filter();
@@ -167,21 +175,35 @@ public sealed partial class MainWindow
         var category = CategoryBox(product?.Category);
         var minimum = Text((product?.Minimum ?? 0).ToString(culture));
 
-        var price = Text(product is null ? "" : (product.Price / 100m).ToString("N2", culture));
-        var rate = Text(product?.DiscountedPrice is long d1 && d1 < product.Price
-            ? DiscountRate(product.Price, d1).ToString("0.##", culture) : "");
-        var discounted = Text(product?.DiscountedPrice is long d2 && d2 < product.Price ? (d2 / 100m).ToString("N2", culture) : "");
-        var rateHost = new Grid();
-        rate.Padding = new Thickness(30, 0, 10, 0);
-        System.Windows.Automation.AutomationProperties.SetName(rate, "İndirim oranı");
-        rateHost.Children.Add(rate);
-        var percent = Label("%", 13, Muted, true);
-        percent.Margin = new Thickness(12, 0, 0, 0);
-        percent.VerticalAlignment = VerticalAlignment.Center;
-        percent.IsHitTestVisible = false;
-        rateHost.Children.Add(percent);
+        string Money2(long cents) => (cents / 100m).ToString("N2", culture);
+        var hasProductDiscount = product is not null && product.SalePrice < product.Price;
+        var price = Text(product is null ? "" : Money2(ListNet(product)));
+        var vat = VatBox(product is null ? DefaultVat : VatOf(product));
+        var gross = Text(product is null ? "" : Money2(ListGross(product)));
+        var discounted = Text(hasProductDiscount ? Money2(SaleNet(product!)) : "");
+        var rate = Text(hasProductDiscount ? DiscountRate(ListNet(product!), SaleNet(product!)).ToString("0.##", culture) : "");
+        var discountedGross = Text();
+        discountedGross.IsReadOnly = true;
+        discountedGross.Focusable = false;
+        Grid Prefixed(TextBox box, string prefix, string automation)
+        {
+            var host = new Grid();
+            box.Padding = new Thickness(30, 0, 10, 0);
+            System.Windows.Automation.AutomationProperties.SetName(box, automation);
+            host.Children.Add(box);
+            var mark = Label(prefix, 13, Muted, true);
+            mark.Margin = new Thickness(12, 0, 0, 0);
+            mark.VerticalAlignment = VerticalAlignment.Center;
+            mark.IsHitTestVisible = false;
+            host.Children.Add(mark);
+            return host;
+        }
+        System.Windows.Automation.AutomationProperties.SetName(price, "KDV hariç fiyat");
+        System.Windows.Automation.AutomationProperties.SetName(gross, "KDV dahil fiyat");
+        System.Windows.Automation.AutomationProperties.SetName(discounted, "İndirimli fiyat (KDV hariç)");
         var effective = Label("", 12, Muted);
         effective.Margin = new Thickness(0, SmallGap, 0, 0);
+        effective.TextWrapping = TextWrapping.Wrap;
 
         var syncing = false;
         void Recalculate(object source)
@@ -190,30 +212,45 @@ public sealed partial class MainWindow
             syncing = true;
             try
             {
-                var hasPrice = TryMoney(price.Text, out var basePrice) && basePrice > 0;
+                var hasVat = int.TryParse(vat.Text.Trim().TrimStart('%'), NumberStyles.Integer, culture, out var vatRate) && vatRate is >= 0 and <= 100;
+                if (!hasVat) vatRate = 0;
+                if (source == gross)
+                {
+                    if (hasVat && TryMoney(gross.Text, out var g) && gross.Text.Trim().Length > 0) price.Text = Money2(WithoutVat(g, vatRate));
+                    else if (gross.Text.Trim().Length == 0) price.Text = "";
+                }
+                var hasPrice = TryMoney(price.Text, out var net) && price.Text.Trim().Length > 0;
+                if (source != gross) gross.Text = hasPrice && hasVat ? Money2(WithVat(net, vatRate)) : "";
+
                 if (source == discounted)
                 {
                     if (discounted.Text.Trim().Length == 0) rate.Text = "";
-                    else if (hasPrice && TryMoney(discounted.Text, out var value) && value <= basePrice)
-                        rate.Text = DiscountRate(basePrice, value).ToString("0.##", culture);
+                    else if (hasPrice && net > 0 && TryMoney(discounted.Text, out var value) && value <= net)
+                        rate.Text = DiscountRate(net, value).ToString("0.##", culture);
                 }
                 else if (rate.Text.Trim().Length > 0)
                 {
-                    if (hasPrice && decimal.TryParse(rate.Text.Trim(), NumberStyles.Number, culture, out var r) && r is >= 0 and <= 100)
-                        discounted.Text = (Math.Round(basePrice * (1 - r / 100)) / 100m).ToString("N2", culture);
+                    if (hasPrice && TryPercent(rate.Text, out var r)) discounted.Text = Money2(AfterDiscount(net, r));
                 }
                 else if (source == rate) discounted.Text = "";
 
-                var hasDiscount = discounted.Text.Trim().Length > 0 && TryMoney(discounted.Text, out var final) && final < basePrice;
+                var hasDiscount = discounted.Text.Trim().Length > 0 && TryMoney(discounted.Text, out var final) && hasPrice && final < net;
                 TryMoney(discounted.Text, out var shown);
-                effective.Text = !hasPrice ? "Satış fiyatını gir; indirim oranı veya indirimli fiyat otomatik hesaplanır."
-                    : hasDiscount ? $"Sepete {Format(shown)} olarak yansır · {Format(basePrice - shown)} indirim"
-                    : $"Sepete {Format(basePrice)} olarak yansır";
+                var saleNet = hasDiscount ? shown : net;
+                discountedGross.Text = hasDiscount && hasVat ? Money2(WithVat(shown, vatRate)) : "";
+                effective.Text = !hasPrice ? "KDV hariç fiyatı veya KDV dahil fiyatı gir; diğeri otomatik hesaplanır."
+                    : !hasVat ? "KDV oranı 0 ile 100 arasında olmalı."
+                    : $"{Format(saleNet)} + %{vatRate} KDV ({Format(WithVat(saleNet, vatRate) - saleNet)}) = " +
+                      $"Sepete {Format(WithVat(saleNet, vatRate))} olarak yansır" +
+                      (hasDiscount ? $" · {Format(net - shown)} indirim (KDV hariç)" : "");
                 effective.Foreground = Paint(hasDiscount ? "#15803D" : Muted);
             }
             finally { syncing = false; }
         }
         price.TextChanged += (_, _) => Recalculate(price);
+        gross.TextChanged += (_, _) => Recalculate(gross);
+        vat.AddHandler(System.Windows.Controls.Primitives.TextBoxBase.TextChangedEvent,
+            new TextChangedEventHandler((_, _) => Recalculate(vat)));
         rate.TextChanged += (_, _) => Recalculate(rate);
         discounted.TextChanged += (_, _) => Recalculate(discounted);
         Recalculate(price);
@@ -230,8 +267,11 @@ public sealed partial class MainWindow
             F(Field("Ürün açıklaması", description), 2),
             F(Field("Ürün kategorisi", category, true)), F(Field("Raf alt sınırı (adet)", minimum))));
         root.Children.Add(Section("Fiyat", PagePadding));
-        root.Children.Add(Form(3, F(Field("Ürün fiyatı (TL)", price, true)), F(Field("İndirim oranı", rateHost)),
-            F(Field("İndirimli fiyatı (TL)", discounted))));
+        root.Children.Add(Form(3,
+            F(Field("KDV hariç fiyat (TL)", price, true)), F(Field("KDV oranı (%)", vat, true)),
+            F(Field("KDV dahil fiyat (TL)", gross)),
+            F(Field("İndirim oranı", Prefixed(rate, "%", "İndirim oranı"))), F(Field("İndirimli fiyat (KDV hariç)", discounted)),
+            F(Field("İndirimli fiyat (KDV dahil)", discountedGross))));
         root.Children.Add(effective);
         var photoTitle = new DockPanel { Margin = new Thickness(0, PagePadding, 0, 0) };
         var photoHint = Label("Sürükleyip bırakabilirsin · yıldız ile kapak fotoğrafını seç", 12, Muted);
@@ -259,19 +299,20 @@ public sealed partial class MainWindow
             if (title.Length == 0) throw new InvalidOperationException("Ürün adı boş olamaz.");
             if (category.SelectedItem is not CategoryChoice chosen) throw new InvalidOperationException("Ürün kategorisi seç.");
             if (price.Text.Trim().Length == 0 || !TryMoney(price.Text, out var basePrice))
-                throw new InvalidOperationException("Ürün fiyatını 0,00 biçiminde gir.");
+                throw new InvalidOperationException("KDV hariç fiyatı 0,00 biçiminde gir.");
+            var vatRate = ReadVat(vat);
             long? sale = null;
             if (discounted.Text.Trim().Length > 0)
             {
                 if (!TryMoney(discounted.Text, out var value)) throw new InvalidOperationException("İndirimli fiyatı 0,00 biçiminde gir.");
-                if (value > basePrice) throw new InvalidOperationException("İndirimli fiyat, ürün fiyatından yüksek olamaz.");
+                if (value > basePrice) throw new InvalidOperationException("İndirimli fiyat, KDV hariç fiyattan yüksek olamaz.");
                 if (value < basePrice) sale = value;
             }
             else if (rate.Text.Trim().Length > 0 &&
-                     !(decimal.TryParse(rate.Text.Trim(), NumberStyles.Number, culture, out var r) && r is >= 0 and <= 100))
+                     !TryPercent(rate.Text, out _))
                 throw new InvalidOperationException("İndirim oranı 0 ile 100 arasında olmalı.");
             Save("product", new Product(id, title, bar, basePrice, Quantity(minimum, true), false,
-                description.Text.Trim(), chosen.Id, sale, photos.ToArray(), cover));
+                description.Text.Trim(), chosen.Id, sale, photos.ToArray(), cover, vatRate, true));
             modal.Close();
             Toast(editing ? "Ürün güncellendi." : "Ürün eklendi.");
         }, editing ? "PrimaryButton" : "SuccessButton", editing ? "" : ""));
@@ -628,7 +669,6 @@ public sealed partial class MainWindow
     }
 
     private sealed record QuoteRow(Guid No, string Customer, DateTime Date, int Lines, long Total);
-    private sealed record QuoteLineRow(Line Line, string Name, int Quantity, long UnitPrice, long Total);
 
     private void AddQuotes()
     {
@@ -684,7 +724,7 @@ public sealed partial class MainWindow
             void ShowSummary()
             {
                 summary.Children.Clear();
-                if (picker.SelectedItem is not AccountChoice choice || !accounts.TryGetValue(choice.Code, out var account))
+                if (TryAccount(picker) is not { } account)
                 {
                     var hint = Label(accounts.Count == 0 ? "Henüz kayıtlı cari yok. Manuel müşteri sekmesinden devam edebilirsin."
                         : "Listeden bir cari seç veya adını yazarak ara.", 12, Muted);
@@ -711,6 +751,7 @@ public sealed partial class MainWindow
                 summary.Children.Add(card);
             }
             picker.SelectionChanged += (_, _) => ShowSummary();
+            picker.LostKeyboardFocus += (_, _) => ShowSummary();
             ShowSummary();
             var registeredView = new StackPanel();
             registeredView.Children.Add(Field("Kayıtlı cari", picker, true));
@@ -746,40 +787,226 @@ public sealed partial class MainWindow
             root.Children.Add(addRow);
             productBox.KeyDown += (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; Run(AddLine); } };
 
-            var lines = Table();
-            lines.AutoGenerateColumns = false;
-            lines.Height = 220;
-            Columns(lines, ("Ürün", "Name", 2.4), ("Adet", "Quantity", 0.7), ("Birim fiyat", "UnitPrice", 1), ("Tutar", "Total", 1));
-            var linesCard = Card(lines);
+            // Kalem tablosu: adet ve iskonto satır üzerinde düzenlenir, çöp kutusu satırı siler.
+            var widths = new[] { new GridLength(1, GridUnitType.Star), new GridLength(132), new GridLength(104), new GridLength(84),
+                new GridLength(52), new GridLength(112), new GridLength(44) };
+            Grid LineGrid()
+            {
+                var grid = new Grid();
+                foreach (var width in widths) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
+                return grid;
+            }
+            void Cell(Grid grid, int column, UIElement element, HorizontalAlignment align = HorizontalAlignment.Right)
+            {
+                if (element is FrameworkElement framework)
+                {
+                    framework.HorizontalAlignment = align;
+                    framework.VerticalAlignment = VerticalAlignment.Center;
+                }
+                Grid.SetColumn(element, column);
+                grid.Children.Add(element);
+            }
+            var header = LineGrid();
+            string[] titles = ["Ürün", "Adet", "Birim (KDV hariç)", "İskonto %", "KDV", "Tutar (KDV dahil)", ""];
+            for (var c = 0; c < titles.Length; c++)
+            {
+                var title = Label(titles[c], 12, Muted, true);
+                title.TextTrimming = TextTrimming.CharacterEllipsis;
+                Cell(header, c, title, c == 0 ? HorizontalAlignment.Left : c == 1 ? HorizontalAlignment.Center : HorizontalAlignment.Right);
+            }
+            var lineRows = new StackPanel();
+            var table = new StackPanel();
+            table.Children.Add(new Border
+            {
+                Child = header, Padding = new Thickness(Gap, 10, 12, 10), Background = Paint("#F9FAFB"),
+                BorderBrush = Paint(LineColor), BorderThickness = new Thickness(0, 0, 0, 1)
+            });
+            table.Children.Add(lineRows);
+            var linesCard = Card(table);
             linesCard.Margin = new Thickness(0, Gap, 0, 0);
             root.Children.Add(linesCard);
-            var bottom = new DockPanel { Margin = new Thickness(0, 12, 0, 0) };
-            var totalLabel = Label("", 18, bold: true);
-            totalLabel.VerticalAlignment = VerticalAlignment.Center;
-            DockPanel.SetDock(totalLabel, Dock.Right);
-            bottom.Children.Add(totalLabel);
-            var remove = Act("Seçili kalemi çıkar", () =>
+
+            // Alt bölüm: solda toplu iskonto, sağda tutar özeti.
+            var bottom = new Grid { Margin = new Thickness(0, Gap, 0, 0) };
+            bottom.ColumnDefinitions.Add(new ColumnDefinition());
+            bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Gap) });
+            bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(320) });
+            var bulk = Text();
+            bulk.Width = 96;
+            System.Windows.Automation.AutomationProperties.SetName(bulk, "Tüm kalemlere iskonto");
+            var bulkApply = Act("Uygula", () =>
             {
-                if (lines.SelectedItem is not QuoteLineRow row) throw new InvalidOperationException("Listeden bir kalem seç.");
-                quoteLines.Remove(row.Line);
-            }, "DangerButton", "");
-            remove.HorizontalAlignment = HorizontalAlignment.Left;
-            bottom.Children.Add(remove);
+                if (quoteLines.Count == 0) throw new InvalidOperationException("Önce kalem ekle.");
+                if (!TryPercent(bulk.Text, out var percent)) throw new InvalidOperationException("İskonto 0 ile 100 arasında olmalı.");
+                for (var k = 0; k < quoteLines.Count; k++) quoteLines[k] = Reprice(quoteLines[k], percent);
+                Toast($"Tüm kalemlere %{percent.ToString("0.##", culture)} iskonto uygulandı.");
+            }, glyph: "");
+            var bulkPanel = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
+            bulkPanel.Children.Add(Field("Tüm kalemlere iskonto (%)", Hstack(Hinted(bulk, "Örn. 5"), bulkApply)));
+            var bulkHint = Label("Yüksek adetli kalemlere satırdaki İskonto % alanından ayrı ayrı da iskonto girebilirsin. " +
+                "İskonto KDV hariç fiyata uygulanır, KDV iskontolu tutar üzerinden hesaplanır.", 12, Muted);
+            bulkHint.TextWrapping = TextWrapping.Wrap;
+            bulkHint.Margin = new Thickness(0, SmallGap, 0, 0);
+            bulkPanel.Children.Add(bulkHint);
+            bottom.Children.Add(bulkPanel);
+            var totalsPanel = new StackPanel();
+            totalsPanel.Children.Add(SummaryRow("Ara Toplam", out var subtotalValue));
+            totalsPanel.Children.Add(SummaryRow("İskonto", out var discountValue, color: "#DC2626"));
+            totalsPanel.Children.Add(SummaryRow("KDV", out var vatValue));
+            totalsPanel.Children.Add(new Border { Height = 1, Background = Paint(LineColor), Margin = new Thickness(0, SmallGap, 0, 0) });
+            totalsPanel.Children.Add(SummaryRow("Genel Toplam", out var totalValue, 18, true, "#1D4ED8"));
+            var summaryCard = Card(totalsPanel, new Thickness(Gap, 12, Gap, 14));
+            summaryCard.Background = Paint("#F9FAFB");
+            Grid.SetColumn(summaryCard, 2);
+            bottom.Children.Add(summaryCard);
             root.Children.Add(bottom);
+
+            var quiet = false;
+            void RenderTotals()
+            {
+                var totals = Summarize(quoteLines);
+                subtotalValue.Text = Format(totals.Subtotal);
+                discountValue.Text = totals.Discount > 0 ? "−" + Format(totals.Discount) : Format(0);
+                vatValue.Text = Format(totals.Vat);
+                totalValue.Text = Format(totals.Total);
+            }
 
             void RenderLines()
             {
-                lines.ItemsSource = quoteLines.Select(l => new QuoteLineRow(l, l.Name, l.Quantity, l.UnitPrice, l.UnitPrice * l.Quantity)).ToArray();
-                totalLabel.Text = "Genel toplam  " + Format(Sum(quoteLines));
+                lineRows.Children.Clear();
+                if (quoteLines.Count == 0)
+                {
+                    var empty = Label("Henüz kalem eklenmedi. Yukarıdan ürün seçip Ekle butonuna bas.", 13, Muted);
+                    empty.Margin = new Thickness(Gap, 20, Gap, 20);
+                    lineRows.Children.Add(empty);
+                }
+                for (var k = 0; k < quoteLines.Count; k++) lineRows.Children.Add(LineRow(k, quoteLines[k], k == quoteLines.Count - 1));
+                RenderTotals();
             }
-            System.Collections.Specialized.NotifyCollectionChangedEventHandler changed = (_, _) => { dirty = true; RenderLines(); };
+
+            UIElement LineRow(int index, Line line, bool last)
+            {
+                var grid = LineGrid();
+                var names = new StackPanel { Margin = new Thickness(0, 0, SmallGap, 0) };
+                var title = Label(line.Name, 13, bold: true);
+                title.TextTrimming = TextTrimming.CharacterEllipsis;
+                title.ToolTip = line.Name;
+                names.Children.Add(title);
+                names.Children.Add(Label(line.Code, 11, Muted));
+                Cell(grid, 0, names, HorizontalAlignment.Stretch);
+
+                var amount = new StackPanel();
+                void Replace(Line updated) { if (index < quoteLines.Count) quoteLines[index] = updated; }
+                // Yazarken satırı yeniden çizmeden günceller (odak kutuda kalır).
+                void Quiet(Line updated)
+                {
+                    if (index >= quoteLines.Count || updated == line) return;
+                    quiet = true;
+                    try { quoteLines[index] = updated; }
+                    finally { quiet = false; }
+                    line = updated;
+                    ShowAmount();
+                }
+                var stepper = new StackPanel { Orientation = Orientation.Horizontal };
+                Button Step(string glyph, int delta, string tip)
+                {
+                    var button = Act("", () =>
+                    {
+                        var next = line.Quantity + delta;
+                        if (next < 1) throw new InvalidOperationException("Adet en az 1 olmalı. Kalemi silmek için çöp kutusunu kullan.");
+                        if (next > 1_000_000) throw new InvalidOperationException("Adet sınırı aşıldı.");
+                        Replace(line with { Quantity = next });
+                    }, glyph: glyph);
+                    button.Width = button.Height = button.MinHeight = 30;
+                    button.Padding = new Thickness(0);
+                    button.ToolTip = tip;
+                    System.Windows.Automation.AutomationProperties.SetName(button, $"{line.Name} {tip}");
+                    return button;
+                }
+                stepper.Children.Add(Step("", -1, "adet azalt"));
+                var quantity = new TextBox
+                {
+                    Text = line.Quantity.ToString(culture), Width = 56, MinHeight = 30, Margin = new Thickness(4, 0, 4, 0),
+                    HorizontalContentAlignment = HorizontalAlignment.Center, Padding = new Thickness(4, 0, 4, 0)
+                };
+                System.Windows.Automation.AutomationProperties.SetName(quantity, $"{line.Name} adet");
+                stepper.Children.Add(quantity);
+                stepper.Children.Add(Step("", 1, "adet artır"));
+                Cell(grid, 1, stepper, HorizontalAlignment.Center);
+                bool ValidQuantity(out int value) => int.TryParse(quantity.Text.Trim(), out value) && value is >= 1 and <= 1_000_000;
+                quantity.TextChanged += (_, _) => { if (ValidQuantity(out var value)) Quiet(line with { Quantity = value }); };
+                void CheckQuantity()
+                {
+                    if (ValidQuantity(out _)) return;
+                    quantity.Text = line.Quantity.ToString(culture);
+                    Toast("Adet 1 ile 1.000.000 arasında olmalı.", true);
+                }
+                quantity.LostKeyboardFocus += (_, _) => CheckQuantity();
+                quantity.KeyDown += (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; CheckQuantity(); } };
+
+                Cell(grid, 2, Label(Format(line.Net ?? line.UnitPrice), 13));
+                var discount = new TextBox
+                {
+                    Text = line.Discount == 0 ? "" : line.Discount.ToString("0.##", culture), Width = 68, MinHeight = 30,
+                    HorizontalContentAlignment = HorizontalAlignment.Right, Padding = new Thickness(6, 0, 8, 0)
+                };
+                System.Windows.Automation.AutomationProperties.SetName(discount, $"{line.Name} iskonto");
+                Cell(grid, 3, Hinted(discount, "0"));
+                bool ValidDiscount(out decimal value)
+                {
+                    value = 0;
+                    return discount.Text.Trim().Length == 0 || TryPercent(discount.Text, out value);
+                }
+                discount.TextChanged += (_, _) => { if (ValidDiscount(out var value) && value != line.Discount) Quiet(Reprice(line, value)); };
+                void CheckDiscount()
+                {
+                    if (ValidDiscount(out _)) return;
+                    discount.Text = line.Discount == 0 ? "" : line.Discount.ToString("0.##", culture);
+                    Toast("İskonto 0 ile 100 arasında olmalı.", true);
+                }
+                discount.LostKeyboardFocus += (_, _) => CheckDiscount();
+                discount.KeyDown += (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; CheckDiscount(); } };
+
+                Cell(grid, 4, Label("%" + (line.Vat ?? 0).ToString(culture), 13, Muted));
+                void ShowAmount()
+                {
+                    amount.Children.Clear();
+                    var total = Label(Format(line.UnitPrice * line.Quantity), 14, bold: true);
+                    total.HorizontalAlignment = HorizontalAlignment.Right;
+                    amount.Children.Add(total);
+                    if (line.Discount <= 0) return;
+                    var saved = Label($"−%{line.Discount.ToString("0.##", culture)} iskonto", 11, "#DC2626");
+                    saved.HorizontalAlignment = HorizontalAlignment.Right;
+                    amount.Children.Add(saved);
+                }
+                ShowAmount();
+                Cell(grid, 5, amount);
+                var delete = Act("", () => quoteLines.RemoveAt(index), "GhostButton", "");
+                delete.Width = delete.Height = delete.MinHeight = 32;
+                delete.Padding = new Thickness(0);
+                delete.Foreground = Paint("#DC2626");
+                delete.ToolTip = "Kalemi sil";
+                System.Windows.Automation.AutomationProperties.SetName(delete, $"{line.Name} sil");
+                Cell(grid, 6, delete);
+                return new Border
+                {
+                    Child = grid, Padding = new Thickness(Gap, SmallGap, 12, SmallGap),
+                    BorderBrush = Paint("#F0F1F4"), BorderThickness = new Thickness(0, 0, 0, last ? 0 : 1)
+                };
+            }
+
+            System.Collections.Specialized.NotifyCollectionChangedEventHandler changed = (_, _) =>
+            {
+                dirty = true;
+                if (quiet) RenderTotals(); else RenderLines();
+            };
             quoteLines.CollectionChanged += changed;
             RenderLines();
 
             void AddLine()
             {
                 var product = ResolveProduct(productBox);
-                quoteLines.Add(new(product.Code, product.Name, Quantity(count), product.SalePrice));
+                quoteLines.Add(LineFor(product, Quantity(count)));
                 productBox.SelectedItem = null;
                 productBox.Text = "";
                 count.Text = "1";
@@ -800,7 +1027,7 @@ public sealed partial class MainWindow
                 if (quoteLines.Count == 0) throw new InvalidOperationException("En az bir ürün ekle.");
                 if (!IsManual())
                 {
-                    if (picker.SelectedItem is not AccountChoice choice || !accounts.TryGetValue(choice.Code, out var account))
+                    var account = TryAccount(picker) ??
                         throw new InvalidOperationException("Kayıtlı bir cari seç veya Manuel müşteri sekmesinden devam et.");
                     var contact = account.Phones is null && account.Emails is null ? account.Contact : ContactSummary(account);
                     StoreQuote(new Quote(account.Name, contact, quoteLines.ToArray(), account.Code));
@@ -852,7 +1079,7 @@ public sealed partial class MainWindow
             };
             if (dialog.ShowDialog(this) != true) return;
             QuotePdf.Save(dialog.FileName, id, date, quote, store.Setting("company", "Aden"),
-                store.Setting("companyContact"), store.Setting("quoteLogo"));
+                store.Setting("companyContact"), store.Setting("quoteLogo"), QuoteTotals(quote));
             Toast($"PDF kaydedildi · {System.IO.Path.GetFileName(dialog.FileName)}");
         }
 
@@ -874,8 +1101,12 @@ public sealed partial class MainWindow
             document.Blocks.Add(new Paragraph(new Run($"{store.Setting("company", "Aden")}\n{store.Setting("companyContact")}\n{date:d}")));
             document.Blocks.Add(new Paragraph(new Run($"{quote.Customer}\n{quote.Contact}")));
             foreach (var line in quote.Lines)
-                document.Blocks.Add(new Paragraph(new Run($"{line.Name} × {line.Quantity}   {Format(line.UnitPrice * line.Quantity)}")));
-            document.Blocks.Add(new Paragraph(new Bold(new Run($"Toplam {Format(Sum(quote.Lines))}"))));
+                document.Blocks.Add(new Paragraph(new Run($"{line.Name} × {line.Quantity}" +
+                    (line.Discount > 0 ? $"  (iskonto %{line.Discount.ToString("0.##", culture)})" : "") +
+                    $"   KDV %{line.Vat ?? 0}   {Format(line.UnitPrice * line.Quantity)}")));
+            var sums = Summarize(quote.Lines);
+            document.Blocks.Add(new Paragraph(new Run($"Ara toplam {Format(sums.Subtotal)}\nİskonto −{Format(sums.Discount)}\nKDV {Format(sums.Vat)}")));
+            document.Blocks.Add(new Paragraph(new Bold(new Run($"Genel toplam {Format(sums.Total)}"))));
             Print(document, "Aden satış teklifi");
         }
 
@@ -894,6 +1125,12 @@ public sealed partial class MainWindow
             SelectPage(posPage);
             Toast("Teklif satış sepetine aktarıldı.");
         }
+    }
+
+    private static (long, long, long, long) QuoteTotals(Quote quote)
+    {
+        var sums = Summarize(quote.Lines);
+        return (sums.Subtotal, sums.Discount, sums.Vat, sums.Total);
     }
 
     private static TextBlock Section(string title, double top = 0)

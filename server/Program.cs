@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using Aden;
 using Npgsql;
@@ -91,6 +91,19 @@ app.MapGet("/sync/pull", async (long after, CancellationToken ct) =>
             new DateTimeOffset(reader.GetDateTime(3), TimeSpan.Zero), reader.GetString(4))));
     return new SyncPage(changes.Count == 0 ? after : changes[^1].Sequence, changes.ToArray());
 });
+app.MapGet("/sync/ping", () => Results.Ok(new { id = "server", name = "Uzak sunucu" }));
+// Kullanıcı girişi: kullanıcı kayıtları merkezde doğrulanır (her cihaz kendi kullanıcısıyla girer).
+app.MapPost("/sync/login", async (LoginRequest request, CancellationToken ct) =>
+{
+    var users = new List<Entry>();
+    await using var command = db.CreateCommand("SELECT id,kind,created_at,data FROM entries WHERE kind='user'");
+    await using var reader = await command.ExecuteReaderAsync(ct);
+    while (await reader.ReadAsync(ct))
+        users.Add(new(reader.GetGuid(0), reader.GetString(1), new DateTimeOffset(reader.GetDateTime(2), TimeSpan.Zero), reader.GetString(3)));
+    var result = Users.Login(users, request.Username ?? "", request.Password ?? "");
+    return result is null ? Results.Unauthorized() : Results.Ok(result);
+});
+app.MapPost("/sync/logout", () => Results.Ok());
 await app.RunAsync();
 
 static string ReadMigration()

@@ -29,10 +29,19 @@ public sealed partial class MainWindow : Window
     private readonly List<(DataGrid Grid, Func<object[]> Data)> views = new();
     private readonly CultureInfo culture = CultureInfo.GetCultureInfo("tr-TR");
     private bool syncing;
+    private readonly Hub hub;
+    private readonly Session session;
+    private bool refreshQueued;
+    private readonly Action changed;
 
-    public MainWindow(Store store)
+    /// <summary>Kullanıcı çıkış yaptıysa uygulama giriş ekranına döner.</summary>
+    public bool LoggedOut { get; private set; }
+
+    public MainWindow(Store store, Hub hub, Session session)
     {
         this.store = store;
+        this.hub = hub;
+        this.session = session;
         Title = "Aden | Ön Muhasebe, Stok ve Satış";
         FontFamily = new FontFamily("Segoe UI");
         FontSize = 14;
@@ -44,25 +53,65 @@ public sealed partial class MainWindow : Window
         AddQuotes();
         AddReports();
         AddSettings();
+        AddDevelopers();
         BuildWorkspace();
         Refresh();
         Totals();
-        status.Text = store.Setting("mode") == "sync" ? "Eşitleme açılıyor" : "Yerel mod · Veriler bu bilgisayarda";
-        timer.Tick += async (_, _) => await Sync();
+        ShowStatus();
+        if (Connection.IsNetworked(store)) status.Text = "Eşitleme açılıyor";
+        // Merkezi sunucuda diğer cihazlardan gelen kayıtlar ekranı yeniler.
+        changed = () => Dispatcher.BeginInvoke(() =>
+        {
+            if (refreshQueued) return;
+            refreshQueued = true;
+            Dispatcher.BeginInvoke(() => { refreshQueued = false; Refresh(); }, DispatcherPriority.Background);
+        });
+        store.Changed += changed;
+        timer.Tick += async (_, _) => { await Sync(); ShowStatus(); refreshDevices?.Invoke(); };
         timer.Start();
         Loaded += async (_, _) => { saleSearch?.Focus(); await Sync(); };
-        Closed += (_, _) => { timer.Stop(); closing.Cancel(); store.Dispose(); };
+        Closed += (_, _) => { store.Changed -= changed; timer.Stop(); closing.Cancel(); };
+    }
+
+    private void ShowStatus()
+    {
+        var mode = store.Setting("mode");
+        if (mode == "hub")
+        {
+            if (!hub.Running) { status.Text = "Merkezi sunucu kapalı · " + (hub.Error ?? "Ayarlar'dan başlat"); return; }
+            var online = store.Devices().Count(d => DateTimeOffset.UtcNow - d.LastSeen < Hub.OnlineWindow);
+            status.Text = $"Merkezi sunucu yayında · {DisplayAddress()}:{hub.Port} · {online} cihaz bağlı";
+        }
+        else if (mode is "local" or "") status.Text = "Yerel mod · Veriler bu bilgisayarda";
+    }
+
+    private string DisplayAddress() => hub.Address == "0.0.0.0" ? Hub.LocalAddresses().FirstOrDefault() ?? "0.0.0.0" : hub.Address;
+
+    private void Logout()
+    {
+        LoggedOut = true;
+        store.Log("Çıkış", session.Username, Environment.MachineName, "yerel", "Çıkış yapıldı", session.Name);
+        if (Connection.IsNetworked(store) && !session.Developer)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var http = Connection.Create(store, session.Username, TimeSpan.FromSeconds(3))!;
+                    using var _ = await http.PostAsync("sync/logout", null);
+                }
+                catch { }
+            });
+        Close();
     }
 
 
     private async Task Sync()
     {
-        if (syncing || closing.IsCancellationRequested || store.Setting("mode") != "sync") return;
+        if (syncing || closing.IsCancellationRequested || !Connection.IsNetworked(store)) return;
         syncing = true;
         try
         {
-            using var http = new HttpClient { BaseAddress = new Uri(store.Setting("url") + "/"), Timeout = TimeSpan.FromSeconds(8) };
-            http.DefaultRequestHeaders.Add("X-Aden-Key", store.Setting("key"));
+            using var http = Connection.Create(store, session.Username, TimeSpan.FromSeconds(8))!;
             var pending = store.Read(true);
             if (pending.Count > 0)
             {
@@ -80,12 +129,12 @@ public sealed partial class MainWindow : Window
                 store.Import(page);
                 Refresh();
             }
-            status.Text = $"Sunucu bağlı · Son eşitleme {DateTime.Now:HH:mm:ss}" +
+            status.Text = (store.Setting("mode") == "client" ? "Merkezi sunucuya bağlı" : "Sunucu bağlı") + $" · Son eşitleme {DateTime.Now:HH:mm:ss}" +
                 (store.Read(true).Count > 0 ? " · Bekleyen kayıtlar var" : "");
         }
         catch (Exception error) when (!closing.IsCancellationRequested)
         {
-            status.Text = $"Yerel çalışma devam ediyor · Eşitleme: {error.Message}";
+            status.Text = $"Yerel çalışma devam ediyor · Eşitleme: {(error is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized } ? "Sunucu kullanıcı adı/şifresi kabul edilmedi" : error.Message)}";
         }
         catch (OperationCanceledException) when (closing.IsCancellationRequested) { }
         finally { syncing = false; }
@@ -94,9 +143,30 @@ public sealed partial class MainWindow : Window
     private void Save<T>(string kind, T data)
     {
         store.Add(kind, data);
+        store.Log("İşlem", session.Username, Environment.MachineName, "yerel", $"{Hub.KindName(kind)} kaydedildi", Summary(data));
         Refresh();
-        if (store.Setting("mode") == "sync") _ = Sync();
+        if (Connection.IsNetworked(store)) _ = Sync();
     }
+
+    /// <summary>Kullanım logu için kısa açıklama (şifre özeti gibi hassas alanlar yazılmaz).</summary>
+    private string Summary(object? data) => data switch
+    {
+        Product p => $"{p.Code} · {p.Name}" + (p.Archived ? " (silindi)" : ""),
+        Account a => $"{a.Code} · {a.Name}" + (a.Archived ? " (silindi)" : ""),
+        ProductCategory c => c.Name + (c.Archived ? " (silindi)" : ""),
+        Stock s => $"{s.Code} · depo {s.Warehouse:+#;-#;0} · mağaza {s.Shop:+#;-#;0}",
+        Sale s => $"{s.Lines.Sum(l => l.Quantity)} ürün · {Format(Sum(s.Lines))} · {string.Join(", ", s.Payments.Select(p => p.Method).Distinct())}",
+        Quote q => $"{q.Customer} · {q.Lines.Length} kalem",
+        QuoteRevision r => r.Value is null ? "Teklif silindi" : $"{r.Value.Customer} · {r.Value.Lines.Length} kalem",
+        Cash c => $"{c.Category} · {Format(c.Amount)} · {c.Detail}",
+        UserAccount u => $"{u.Username} · {u.Role}" + (u.Archived ? " (silindi)" : ""),
+        VariationType v => $"{v.Name} · {v.Values.Length} varyant" + (v.Archived ? " (silindi)" : ""),
+        StockRevision r => r.Value is null ? "Stok hareketi silindi" : $"{r.Value.Code} düzeltildi",
+        SaleRevision r => r.Value is null ? "Satış silindi" : $"Satış düzenlendi · {Format(Sum(r.Value.Lines))}",
+        SaleReturn r => $"{r.Type} · iade {r.Returned.Sum(l => l.Quantity)} · verilen {r.Given.Sum(l => l.Quantity)}",
+        SupplierReturn r => $"{r.Number} · {r.Supplier} · {r.Lines.Sum(l => l.Quantity)} ürün",
+        _ => ""
+    };
 
     private Entry[] snapshot = Array.Empty<Entry>();
     private IEnumerable<(Entry Entry, T Value)> Read<T>(string kind) =>
@@ -120,9 +190,8 @@ public sealed partial class MainWindow : Window
             else accounts[item.Value.Code] = item.Value;
         }
         LoadCategories();
-        foreach (var item in Read<Stock>("stock")) Move(item.Value.Code, item.Value.Warehouse, item.Value.Shop);
-        foreach (var sale in Read<Sale>("sale"))
-            foreach (var line in sale.Value.Lines) Move(line.Code, 0, -line.Quantity);
+        LoadVariations();
+        LoadLedger();
         foreach (var view in views) view.Grid.ItemsSource = view.Data();
         foreach (var refresh in refreshers) refresh();
         refreshCatalog?.Invoke();
@@ -138,7 +207,7 @@ public sealed partial class MainWindow : Window
     private Product Find(string value)
     {
         if (products.TryGetValue(value, out var product)) return product;
-        var barcode = value == DefaultBarcode ? null : products.Values.FirstOrDefault(p => p.Barcode == value);
+        var barcode = value == DefaultBarcode ? null : products.Values.FirstOrDefault(p => p.Barcode.Length > 0 && p.Barcode == value);
         if (barcode is not null) return barcode;
         var matches = products.Values.Where(p =>
             culture.CompareInfo.IndexOf(p.Name, value, CompareOptions.IgnoreCase) >= 0).Take(2).ToArray();

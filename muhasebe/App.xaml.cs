@@ -14,6 +14,7 @@ public partial class App : Application
         base.OnStartup(e);
         LaunchWindow? launch = null;
         Store? store = null;
+        Hub hub;
         try
         {
             var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -33,12 +34,10 @@ public partial class App : Application
             launch.Show();
             var animation = SystemParameters.ClientAreaAnimation ? Task.Delay(1150) : Task.CompletedTask;
             store = await Task.Run(() => new Store(path));
+            hub = new Hub(store);
+            // Merkezi sunucu oturumdan bağımsızdır: kimse giriş yapmamışken de diğer cihazlara hizmet verir.
+            if (store.Setting("mode") == "hub") await hub.StartAsync();
             await animation;
-            MainWindow = new MainWindow(store);
-            store = null;
-            MainWindow.Show();
-            ShutdownMode = ShutdownMode.OnMainWindowClose;
-            launch.Close();
         }
         catch (Exception error)
         {
@@ -46,6 +45,39 @@ public partial class App : Application
             launch?.Close();
             MessageBox.Show(error.Message, "Aden başlatılamadı");
             Shutdown(1);
+            return;
+        }
+
+        try
+        {
+            while (true)
+            {
+                var login = new LoginWindow(store);
+                MainWindow = login;
+                login.Show();
+                launch?.Close();
+                launch = null;
+                var session = await login.Result;
+                if (session is null) break;
+                var main = new MainWindow(store, hub, session);
+                MainWindow = main;
+                var closed = new TaskCompletionSource();
+                main.Closed += (_, _) => closed.TrySetResult();
+                main.Show();
+                login.Close();
+                await closed.Task;
+                if (!main.LoggedOut) break;
+            }
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(error.Message, "Aden");
+        }
+        finally
+        {
+            await hub.DisposeAsync();
+            store.Dispose();
+            Shutdown();
         }
     }
 

@@ -22,6 +22,8 @@ public sealed partial class MainWindow
     private sealed record PageInfo(string Title, string Glyph, UIElement Content);
     private readonly List<PageInfo> pages = new();
     private readonly List<Action> refreshers = new();
+    /// <summary>Barkod okuyucu: odak bir yazı alanında değilken gelen tuşlar bu sayfanın arama kutusuna yazılır.</summary>
+    private readonly Dictionary<UIElement, TextBox> scanTargets = new();
     private readonly Grid modalLayer = new();
     private readonly StackPanel toastLayer = new()
     {
@@ -96,6 +98,26 @@ public sealed partial class MainWindow
     private void Run(Action action)
     {
         try { action(); }
+        catch (Exception error) { Toast(error.Message, true); }
+    }
+
+    private Button Act(string text, Func<Task> action, string? style = null, string? glyph = null)
+    {
+        var button = new Button();
+        if (style is not null) button.Style = (Style)FindResource(style);
+        SetButtonContent(button, text, glyph);
+        button.Click += async (_, _) =>
+        {
+            button.IsEnabled = false;
+            try { await RunAsync(action); }
+            finally { button.IsEnabled = true; }
+        };
+        return button;
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        try { await action(); }
         catch (Exception error) { Toast(error.Message, true); }
     }
 
@@ -210,7 +232,7 @@ public sealed partial class MainWindow
         };
         grid.AutoGeneratingColumn += (_, e) =>
         {
-            e.Column.Header = System.Text.RegularExpressions.Regex.Replace(e.PropertyName, "(?<=\\p{Ll})(?=\\p{Lu})", " ");
+            e.Column.Header = System.Text.RegularExpressions.Regex.Replace(e.PropertyName, "(?<=\\p{Ll})(?=\\p{Lu})", " ").Replace("Kdv", "KDV");
             if (e.PropertyType == typeof(DateTime) && e.Column is DataGridTextColumn column &&
                 column.Binding is System.Windows.Data.Binding binding)
                 binding.StringFormat = "dd.MM.yyyy HH:mm";
@@ -350,6 +372,7 @@ public sealed partial class MainWindow
         DockPanel.SetDock(footer, Dock.Bottom);
         rail.Children.Add(footer);
         if (updateCard is not null) footer.Children.Add(updateCard);
+        footer.Children.Add(UserCard());
         var statusRow = new DockPanel { Margin = new Thickness(12, Gap, 12, 0) };
         var dot = new Border
         {
@@ -380,8 +403,9 @@ public sealed partial class MainWindow
             icon.Width = 28;
             row.Children.Add(icon);
             row.Children.Add(new TextBlock { Text = page.Title, FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
-            navigation.Items.Add(row);
+            navigation.Items.Add(new ListBoxItem { Content = row });
         }
+        UpdateNavigationAccess();
         rail.Children.Add(navigation);
 
         Grid.SetColumn(host, 1);
@@ -395,6 +419,17 @@ public sealed partial class MainWindow
         };
         SelectPage(posPage);
 
+        PreviewTextInput += (_, e) =>
+        {
+            if (modals.Count > 0 || e.Text.Length == 0 || char.IsControl(e.Text[0])) return;
+            if (host.Content is not UIElement page || !scanTargets.TryGetValue(page, out var target)) return;
+            var focused = Keyboard.FocusedElement;
+            if (focused is System.Windows.Controls.Primitives.TextBoxBase or PasswordBox || focused is ComboBox { IsEditable: true }) return;
+            e.Handled = true;
+            target.Focus();
+            target.Text = e.Text;
+            target.CaretIndex = target.Text.Length;
+        };
         PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape && modals.Count > 0)
@@ -412,6 +447,66 @@ public sealed partial class MainWindow
                 e.Handled = true;
                 SetFullscreen(!fullscreen);
             }
+            else if (e.Key == Key.D && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && modals.Count == 0)
+            {
+                e.Handled = true;
+                OpenDevelopers();
+            }
+        };
+    }
+
+    /// <summary>Yetkiye göre menü: Ayarlar yalnızca yöneticilere, Developers yalnızca dev hesabına görünür.</summary>
+    private void UpdateNavigationAccess()
+    {
+        for (var i = 0; i < pages.Count; i++)
+        {
+            var allowed = pages[i].Content == developersPage ? developerUnlocked
+                : pages[i].Title != "Ayarlar" || session.IsAdmin;
+            ((ListBoxItem)navigation.Items[i]).Visibility = allowed ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    private Border UserCard()
+    {
+        var initials = string.Concat(session.Name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(w => char.ToUpper(w[0], culture)));
+        var avatar = new Border
+        {
+            Width = 34, Height = 34, CornerRadius = new CornerRadius(17), Background = Paint(session.Developer ? "#111827" : "#DBEAFE"),
+            Child = new TextBlock
+            {
+                Text = initials.Length > 0 ? initials : "?", FontSize = 13, FontWeight = FontWeights.Bold,
+                Foreground = Paint(session.Developer ? "#FFFFFF" : "#1D4ED8"),
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+            }
+        };
+        var logout = new Button
+        {
+            Style = (Style)FindResource("GhostButton"), Width = 34, Height = 34, MinHeight = 34, Padding = new Thickness(0),
+            Content = Glyph("", 14), ToolTip = "Çıkış yap", VerticalAlignment = VerticalAlignment.Center
+        };
+        System.Windows.Automation.AutomationProperties.SetName(logout, "Çıkış yap");
+        logout.Click += (_, _) =>
+        {
+            if (modals.Count > 0) return;
+            if (basket.Count > 0 || quoteLines.Count > 0)
+                Confirm("Çıkış yap", "Sepette veya teklifte kaydedilmemiş kalemler var. Çıkış yaparsan bunlar silinir.", "Çıkış yap", Logout);
+            else Logout();
+        };
+        var dock = new DockPanel();
+        DockPanel.SetDock(avatar, Dock.Left);
+        DockPanel.SetDock(logout, Dock.Right);
+        dock.Children.Add(avatar);
+        dock.Children.Add(logout);
+        var names = new StackPanel { Margin = new Thickness(10, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+        var name = Label(session.Name, 13, bold: true);
+        name.TextTrimming = TextTrimming.CharacterEllipsis;
+        names.Children.Add(name);
+        names.Children.Add(Label(session.Developer ? "Geliştirici" : session.Role + (session.Offline ? " · çevrimdışı" : ""), 11, Muted));
+        dock.Children.Add(names);
+        return new Border
+        {
+            Child = dock, Padding = new Thickness(10, 8, 6, 8), Margin = new Thickness(0, Gap, 0, 0),
+            Background = Paint("#F9FAFB"), CornerRadius = new CornerRadius(12), BorderBrush = Paint(LineColor), BorderThickness = new Thickness(1)
         };
     }
 

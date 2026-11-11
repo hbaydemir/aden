@@ -31,15 +31,14 @@ public sealed partial class MainWindow
         var catalog = new DockPanel();
         layout.Children.Add(catalog);
 
-        var top = new Grid { Margin = new Thickness(0, 0, 0, Gap) };
+        var top = new Grid { Margin = new Thickness(0, 0, 0, 12) };
         top.ColumnDefinitions.Add(new ColumnDefinition());
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        for (var c = 0; c < 4; c++) top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         DockPanel.SetDock(top, Dock.Top);
         catalog.Children.Add(top);
         var searchHost = SearchField("Barkod okut, ürün adı veya kodu yaz", out var search, large: true);
         saleSearch = search;
+        scanTargets[posPage] = search;
         top.Children.Add(searchHost);
 
         var countHost = new Grid { Width = 92, Margin = new Thickness(12, 0, 0, 0) };
@@ -59,11 +58,21 @@ public sealed partial class MainWindow
         Grid.SetColumn(countHost, 1);
         top.Children.Add(countHost);
 
+        var lowOnly = false;
+        var lowButton = new Button
+        {
+            Style = (Style)FindResource("DangerButton"), MinHeight = 52, Padding = new Thickness(Gap, 0, Gap, 0),
+            Margin = new Thickness(12, 0, 0, 0), Visibility = Visibility.Collapsed,
+            ToolTip = "Dükkân stoku raf alt sınırında veya altında olan ürünler"
+        };
+        Grid.SetColumn(lowButton, 2);
+        top.Children.Add(lowButton);
+
         var history = Act("Satış geçmişi", ShowSalesHistory, glyph: "");
         history.MinHeight = 52;
         history.Padding = new Thickness(Gap, 0, Gap, 0);
         history.Margin = new Thickness(12, 0, 0, 0);
-        Grid.SetColumn(history, 2);
+        Grid.SetColumn(history, 3);
         top.Children.Add(history);
 
         var expand = new Button { MinHeight = 52, Padding = new Thickness(Gap, 0, Gap, 0), Margin = new Thickness(12, 0, 0, 0) };
@@ -71,18 +80,55 @@ public sealed partial class MainWindow
         fullscreenChanged = () => SetButtonContent(expand, fullscreen ? "Küçült" : "Tam ekran", fullscreen ? "" : "");
         fullscreenChanged();
         expand.ToolTip = "Tam ekran (F11)";
-        Grid.SetColumn(expand, 3);
+        Grid.SetColumn(expand, 4);
         top.Children.Add(expand);
 
-        var info = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
-        DockPanel.SetDock(info, Dock.Top);
-        catalog.Children.Add(info);
-        var pager = new StackPanel { Orientation = Orientation.Horizontal };
+        // Filtreler: Tümü / Barkodsuz, kategori ve sıralama
+        var filters = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+        DockPanel.SetDock(filters, Dock.Top);
+        catalog.Children.Add(filters);
+        var mainFilter = new StackPanel { Orientation = Orientation.Horizontal };
+        var filterBar = new Border
+        {
+            Child = mainFilter, Background = Paint("#E9EBF0"), CornerRadius = new CornerRadius(10), Padding = new Thickness(4),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        DockPanel.SetDock(filterBar, Dock.Left);
+        filters.Children.Add(filterBar);
+        var barcodeless = false;
+        var allButton = new Button { Content = "Tümü", Padding = new Thickness(14, 0, 14, 0) };
+        var noBarcodeButton = new Button { Content = "Barkodsuzlar", Padding = new Thickness(14, 0, 14, 0), Margin = new Thickness(4, 0, 0, 0) };
+        mainFilter.Children.Add(allButton);
+        mainFilter.Children.Add(noBarcodeButton);
+        var categoryFilter = new ComboBox { DisplayMemberPath = nameof(CategoryChoice.Label), Width = 180, MaxDropDownHeight = 360, Margin = new Thickness(10, 0, 0, 0) };
+        AutomationProperties.SetName(categoryFilter, "Kategori filtresi");
+        DockPanel.SetDock(categoryFilter, Dock.Left);
+        filters.Children.Add(categoryFilter);
+        var sorts = new[] { "Ada göre (A–Z)", "Stok: azdan çoka", "Stok: çoktan aza", "Fiyat: azdan çoka", "Fiyat: çoktan aza" };
+        var sortBox = new ComboBox { ItemsSource = sorts, SelectedIndex = 0, Width = 170, Margin = new Thickness(10, 0, 0, 0) };
+        AutomationProperties.SetName(sortBox, "Sıralama");
+        DockPanel.SetDock(sortBox, Dock.Left);
+        filters.Children.Add(sortBox);
+        var pager = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         DockPanel.SetDock(pager, Dock.Right);
-        info.Children.Add(pager);
+        filters.Children.Add(pager);
         var result = Label("", 13, Muted);
         result.VerticalAlignment = VerticalAlignment.Center;
-        info.Children.Add(result);
+        result.HorizontalAlignment = HorizontalAlignment.Right;
+        result.Margin = new Thickness(10, 0, 8, 0);
+        result.TextTrimming = TextTrimming.CharacterEllipsis;
+        filters.Children.Add(result);
+
+        void FillCategories()
+        {
+            var selected = (categoryFilter.SelectedItem as CategoryChoice)?.Id ?? "";
+            var items = new List<CategoryChoice> { new("", "Tüm kategoriler") };
+            items.AddRange(CategoryTree().Select(c => new CategoryChoice(c.Category.Id, new string(' ', c.Depth * 3) + c.Category.Name)));
+            categoryFilter.ItemsSource = items;
+            categoryFilter.SelectedItem = items.FirstOrDefault(i => i.Id.Equals(selected, StringComparison.OrdinalIgnoreCase)) ?? items[0];
+        }
+        FillCategories();
+        refreshers.Add(FillCategories);
 
         var tiles = new WrapPanel();
         var scroll = TouchScroll(tiles);
@@ -94,8 +140,16 @@ public sealed partial class MainWindow
             if (payments.Count > 0)
                 throw new InvalidOperationException("Sepeti değiştirmek için önce kayıtlı ödeme parçalarını kaldır.");
             var quantity = Quantity(count);
+            if (OptionsOf(product).Length > 0) PickVariant(product, variant => AddLine(product, quantity, variant));
+            else AddLine(product, quantity, null);
+        }
+
+        void AddLine(Product product, int quantity, string? variant)
+        {
             var priced = LineFor(product, quantity);
-            var existing = basket.FirstOrDefault(line => line.Code == product.Code && line.UnitPrice == priced.UnitPrice && line.Discount == 0);
+            if (variant is not null) priced = priced with { Name = $"{product.Name} · {variant}" };
+            var existing = basket.FirstOrDefault(line => line.Code == product.Code && line.Name == priced.Name &&
+                line.UnitPrice == priced.UnitPrice && line.Discount == 0);
             if (existing is null)
                 basket.Add(priced);
             else
@@ -111,19 +165,39 @@ public sealed partial class MainWindow
         }
 
         var page = 0;
-        const int pageSize = 60;
-        const double tileGap = 12;
+        const int pageSize = 48;
+        const double tileGap = 14;
+        const double minTile = 236;
         void RenderCatalog()
         {
             tiles.Children.Clear();
             pager.Children.Clear();
+            allButton.Style = (Style)FindResource(barcodeless ? "SegmentButton" : "SegmentActiveButton");
+            noBarcodeButton.Style = (Style)FindResource(barcodeless ? "SegmentActiveButton" : "SegmentButton");
+            var low = products.Values.Count(IsLow);
+            if (low == 0) lowOnly = false;
+            lowButton.Visibility = low > 0 ? Visibility.Visible : Visibility.Collapsed;
+            SetButtonContent(lowButton, lowOnly ? "Raf sınırı filtresi açık" : $"Raf sınırı · {low}", lowOnly ? "" : "");
+
             var term = search.Text.Trim();
-            var matched = products.Values
+            var categoryId = (categoryFilter.SelectedItem as CategoryChoice)?.Id ?? "";
+            var filtered = products.Values
+                .Where(product => !barcodeless || !HasBarcode(product))
+                .Where(product => !lowOnly || IsLow(product))
+                .Where(product => categoryId.Length == 0 || IsDescendant(CategoryOf(product).Id, categoryId))
                 .Where(product => term.Length == 0 ||
-                    (product.Barcode != DefaultBarcode && product.Barcode.Contains(term, StringComparison.OrdinalIgnoreCase)) ||
+                    (HasBarcode(product) && product.Barcode.Contains(term, StringComparison.OrdinalIgnoreCase)) ||
                     product.Code.Contains(term, StringComparison.OrdinalIgnoreCase) ||
-                    culture.CompareInfo.IndexOf(product.Name, term, CompareOptions.IgnoreCase) >= 0)
-                .OrderBy(product => product.Name, StringComparer.Create(culture, true)).ToArray();
+                    culture.CompareInfo.IndexOf(product.Name, term, CompareOptions.IgnoreCase) >= 0);
+            var byName = StringComparer.Create(culture, true);
+            var matched = (sortBox.SelectedIndex switch
+            {
+                1 => filtered.OrderBy(p => stock.GetValueOrDefault(p.Code).Shop).ThenBy(p => p.Name, byName),
+                2 => filtered.OrderByDescending(p => stock.GetValueOrDefault(p.Code).Shop).ThenBy(p => p.Name, byName),
+                3 => filtered.OrderBy(SaleGross).ThenBy(p => p.Name, byName),
+                4 => filtered.OrderByDescending(SaleGross).ThenBy(p => p.Name, byName),
+                _ => filtered.OrderBy(p => p.Name, byName)
+            }).ToArray();
             var lastPage = Math.Max(0, (matched.Length - 1) / pageSize);
             page = Math.Clamp(page, 0, lastPage);
             result.Text = matched.Length == 0 ? "Ürün bulunamadı" : $"{matched.Length} ürün";
@@ -134,12 +208,12 @@ public sealed partial class MainWindow
                 var hint = Label("Satışa başlamak için ilk ürün kartını ekle.", 13, Muted);
                 hint.Margin = new Thickness(0, 4, 0, Gap);
                 empty.Children.Add(hint);
-                var go = Act("Ürünlere git", () => SelectPage(productsPage), "PrimaryButton", "");
+                var go = Act("Ürünlere git", () => SelectPage(productsPage), "PrimaryButton", "");
                 go.HorizontalAlignment = HorizontalAlignment.Left;
                 empty.Children.Add(go);
                 tiles.Children.Add(empty);
             }
-            var size = TileSize();
+            var size = TileWidth();
             foreach (var product in matched.Skip(page * pageSize).Take(pageSize))
                 tiles.Children.Add(Tile(product, size));
             if (lastPage > 0)
@@ -158,14 +232,35 @@ public sealed partial class MainWindow
             }
         }
 
-        Button Tile(Product product, double size)
+        Border Pill(string text, string background, string foreground, string? glyph = null, HorizontalAlignment h = HorizontalAlignment.Left,
+            VerticalAlignment v = VerticalAlignment.Top)
+        {
+            var content = new StackPanel { Orientation = Orientation.Horizontal };
+            if (glyph is not null)
+            {
+                var icon = Glyph(glyph, 11, foreground);
+                icon.Margin = new Thickness(0, 0, 5, 0);
+                content.Children.Add(icon);
+            }
+            content.Children.Add(Label(text, 12, foreground, true));
+            return new Border
+            {
+                CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 3, 9, 4), Margin = new Thickness(10),
+                HorizontalAlignment = h, VerticalAlignment = v, Background = Paint(background), Child = content
+            };
+        }
+
+        Button Tile(Product product, double width)
         {
             var available = stock.GetValueOrDefault(product.Code).Shop;
             var discounted = product.SalePrice < product.Price;
+            var low = IsLow(product);
+            var unit = product.Unit.ToLower(culture);
             var tile = new Button
             {
-                Style = (Style)FindResource("PosTile"), Width = size, Height = size,
-                Margin = new Thickness(0, 0, tileGap, tileGap), Padding = new Thickness(0)
+                Style = (Style)FindResource("PosTile"), Width = width, Height = TileHeight(width),
+                Margin = new Thickness(0, 0, tileGap, tileGap), Padding = new Thickness(0),
+                HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch
             };
             tile.Click += (_, _) => Run(() => AddProduct(product));
             var card = new Grid();
@@ -173,68 +268,87 @@ public sealed partial class MainWindow
             card.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             card.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            // Fotoğraf alanı: kapak fotoğrafı ya da NO IMAGE görseli
+            // Fotoğraf alanı ve rozetler
             var photo = new Grid { Background = Paint("#F1F2F4") };
-            photo.Children.Add(new Image { Source = Photo(CoverOf(product), 320), Stretch = Stretch.UniformToFill });
-            var badge = new Border
+            photo.Children.Add(new Image { Source = Photo(CoverOf(product), 480), Stretch = Stretch.UniformToFill });
+            photo.Children.Add(new Border
             {
-                CornerRadius = new CornerRadius(6), Padding = new Thickness(7, 2, 7, 3), Margin = new Thickness(8),
-                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
-                Background = Paint(available > 0 ? "#E6FFFFFF" : "#F2DC2626"),
-                Child = Label(available > 0 ? $"{available} adet" : "Stok yok", 11, available > 0 ? "#15803D" : "#FFFFFF", true)
-            };
-            photo.Children.Add(badge);
+                Height = 56, VerticalAlignment = VerticalAlignment.Bottom, IsHitTestVisible = false,
+                Background = new LinearGradientBrush(Color.FromArgb(0, 0, 0, 0), Color.FromArgb(0x40, 0, 0, 0), 90)
+            });
+            photo.Children.Add(available > 0
+                ? Pill($"{available} {unit}", "#F2FFFFFF", low ? "#B45309" : "#15803D", "")
+                : Pill("Stok yok", "#F2DC2626", "#FFFFFF", ""));
             if (discounted)
-            {
-                photo.Children.Add(new Border
-                {
-                    CornerRadius = new CornerRadius(6), Padding = new Thickness(7, 2, 7, 3), Margin = new Thickness(8),
-                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
-                    Background = Paint("#DC2626"),
-                    Child = Label($"−%{DiscountRate(ListNet(product), SaleNet(product)).ToString("0.#", culture)}", 11, "#FFFFFF", true)
-                });
-            }
+                photo.Children.Add(Pill($"−%{DiscountRate(ListNet(product), SaleNet(product)).ToString("0.#", culture)}", "#DC2626", "#FFFFFF",
+                    "", HorizontalAlignment.Right));
+            if (low && available > 0)
+                photo.Children.Add(Pill("Stok azaldı", "#DC2626", "#FFFFFF", "", v: VerticalAlignment.Bottom));
+            if (product.Variation.Length > 0 && VariationName(product) is { Length: > 0 } variation)
+                photo.Children.Add(Pill($"{OptionsOf(product).Length} {variation.ToLower(culture)}", "#E61E293B", "#FFFFFF", "",
+                    HorizontalAlignment.Right, VerticalAlignment.Bottom));
             card.Children.Add(photo);
 
-            var info = new StackPanel { Margin = new Thickness(10, 8, 10, 10) };
+            var info = new StackPanel { Margin = new Thickness(12, 10, 12, 12) };
             Grid.SetRow(info, 1);
-            var name = Label(product.Name, 13, bold: true);
+            var name = Label(product.Name, 14, bold: true);
+            name.TextWrapping = TextWrapping.Wrap;
             name.TextTrimming = TextTrimming.CharacterEllipsis;
+            name.Height = 38;
+            name.LineHeight = 19;
+            name.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
             name.ToolTip = product.Name;
             info.Children.Add(name);
-            var prices = new WrapPanel { Margin = new Thickness(0, 2, 0, 0) };
-            var price = Label(Format(SaleGross(product)), 16, discounted ? "#DC2626" : "#2563EB", true);
-            price.Margin = new Thickness(0, 0, 6, 0);
+            var description = Label(product.Description.Length > 0 ? product.Description.ReplaceLineEndings(" ") : "-", 12, Muted);
+            description.TextTrimming = TextTrimming.CharacterEllipsis;
+            description.Margin = new Thickness(0, 2, 0, 0);
+            if (product.Description.Length > 0) description.ToolTip = product.Description;
+            info.Children.Add(description);
+            var prices = new DockPanel { Margin = new Thickness(0, 8, 0, 0), LastChildFill = false };
+            var price = Label(Format(SaleGross(product)), 18, discounted ? "#DC2626" : "#2563EB", true);
+            price.VerticalAlignment = VerticalAlignment.Bottom;
             prices.Children.Add(price);
             if (discounted)
             {
-                var old = Label(Format(ListGross(product)), 11, Muted);
+                var old = Label(Format(ListGross(product)), 12, Muted);
                 old.TextDecorations = TextDecorations.Strikethrough;
-                old.VerticalAlignment = VerticalAlignment.Center;
+                old.VerticalAlignment = VerticalAlignment.Bottom;
+                old.Margin = new Thickness(6, 0, 0, 2);
                 prices.Children.Add(old);
             }
+            var per = Label($"/ {unit}", 12, Muted);
+            per.VerticalAlignment = VerticalAlignment.Bottom;
+            per.Margin = new Thickness(0, 0, 0, 2);
+            DockPanel.SetDock(per, Dock.Right);
+            prices.Children.Add(per);
             info.Children.Add(prices);
             card.Children.Add(info);
             tile.Content = card;
-            AutomationProperties.SetName(tile, $"{product.Name}, {Format(SaleGross(product))}, dükkânda {available} adet");
+            AutomationProperties.SetName(tile, $"{product.Name}, {Format(SaleGross(product))}, dükkânda {available} {unit}" + (low ? ", stok azaldı" : ""));
             return tile;
         }
 
-        double TileSize()
+        double TileWidth()
         {
             var width = scroll.ViewportWidth;
-            if (width <= 0) return 160;
-            var columns = Math.Max(2, (int)(width / (160 + tileGap)));
+            if (width <= 0) return minTile;
+            var columns = Math.Max(1, (int)(width / (minTile + tileGap)));
             return Math.Floor(width / columns) - tileGap;
         }
+        static double TileHeight(double width) => Math.Round(width * 0.6) + 128;
 
         scroll.ScrollChanged += (_, e) =>
         {
             if (e.ViewportWidthChange == 0) return;
-            var size = TileSize();
-            foreach (var tile in tiles.Children.OfType<Button>()) tile.Width = tile.Height = size;
+            var size = TileWidth();
+            foreach (var tile in tiles.Children.OfType<Button>()) { tile.Width = size; tile.Height = TileHeight(size); }
         };
         refreshCatalog = RenderCatalog;
+        allButton.Click += (_, _) => { barcodeless = false; page = 0; RenderCatalog(); };
+        noBarcodeButton.Click += (_, _) => { barcodeless = true; page = 0; RenderCatalog(); };
+        lowButton.Click += (_, _) => { lowOnly = !lowOnly; page = 0; RenderCatalog(); };
+        categoryFilter.SelectionChanged += (_, _) => { page = 0; RenderCatalog(); };
+        sortBox.SelectionChanged += (_, _) => { page = 0; RenderCatalog(); };
         search.TextChanged += (_, _) => { page = 0; RenderCatalog(); };
         search.KeyDown += (_, e) =>
         {
@@ -311,26 +425,32 @@ public sealed partial class MainWindow
         totalRow.Children.Add(totalCaption);
         footer.Children.Add(totalRow);
 
-        var pay = new UniformGrid { Columns = 2, Margin = new Thickness(0, 0, -10, -10) };
+        var pay = new StackPanel();
         footer.Children.Add(pay);
-        Button PayButton(string text, string glyph, string? style, Action action)
+        var payTop = new UniformGrid { Columns = 3, Margin = new Thickness(0, 0, -10, 0) };
+        var payBottom = new UniformGrid { Columns = 2, Margin = new Thickness(0, 0, -10, -10) };
+        pay.Children.Add(payTop);
+        pay.Children.Add(payBottom);
+        Button PayButton(UniformGrid row, string text, string glyph, string? style, Action action)
         {
             var button = Act("", action, style);
-            button.Height = 64;
-            button.FontSize = 16;
+            button.Height = 60;
+            button.FontSize = 14;
+            button.Padding = new Thickness(4, 0, 4, 0);
             button.Margin = new Thickness(0, 0, 10, 10);
             var content = new StackPanel { Orientation = Orientation.Horizontal };
-            content.Children.Add(Glyph(glyph, 18));
-            content.Children.Add(new TextBlock { Text = text, Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
+            content.Children.Add(Glyph(glyph, 16));
+            content.Children.Add(new TextBlock { Text = text, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
             button.Content = content;
             AutomationProperties.SetName(button, text);
-            pay.Children.Add(button);
+            row.Children.Add(button);
             return button;
         }
-        PayButton("Nakit", "", "SuccessButton", () => CompleteSingle("Nakit"));
-        PayButton("Kart", "", "PrimaryButton", () => CompleteSingle("Kart"));
-        PayButton("Vadeli", "", "WarningButton", () => CompleteSingle("Vadeli"));
-        PayButton("Parçalı", "", null, ShowSplitPayment);
+        PayButton(payTop, "Nakit", "\uE8C7", "SuccessButton", () => CompleteSingle("Nakit"));
+        PayButton(payTop, "Kredi Kartı", "\uE8C7", "PrimaryButton", () => CompleteSingle("Kart"));
+        PayButton(payTop, "Havale/EFT", "\uE8AB", "PrimaryButton", () => CompleteSingle("Havale/EFT"));
+        PayButton(payBottom, "Vadeli", "\uE787", "WarningButton", () => CompleteSingle("Vadeli"));
+        PayButton(payBottom, "Parçalı", "\uE8C1", null, ShowSplitPayment);
 
         var lines = new StackPanel();
         cartDock.Children.Add(TouchScroll(lines));
@@ -381,7 +501,7 @@ public sealed partial class MainWindow
             var name = Label(line.Name, 14, bold: true);
             name.TextTrimming = TextTrimming.CharacterEllipsis;
             text.Children.Add(name);
-            var unit = Label($"{Format(line.UnitPrice)} / adet" + (line.Vat is int rate ? $" · KDV %{rate}" : ""), 12, Muted);
+            var unit = Label($"{Format(line.UnitPrice)} / {(products.TryGetValue(line.Code, out var lp) ? lp.Unit.ToLower(culture) : "adet")}" + (line.Vat is int rate ? $" · KDV %{rate}" : ""), 12, Muted);
             unit.Margin = new Thickness(0, 2, 0, 0);
             text.Children.Add(unit);
             row.Children.Add(text);
@@ -519,11 +639,11 @@ public sealed partial class MainWindow
             amountRow.Children.Add(fill);
             body.Children.Add(Field("Ödeme tutarı (TL)", amountRow));
 
-            var methods = new UniformGrid { Columns = 2, Margin = new Thickness(0, 12, -SmallGap, 0) };
+            var methods = new UniformGrid { Columns = 3, Margin = new Thickness(0, 12, -SmallGap, 0) };
             body.Children.Add(methods);
-            foreach (var (method, style) in new[] { ("Nakit", "SuccessButton"), ("Kart", "PrimaryButton") })
+            foreach (var (method, style) in new[] { ("Nakit", "SuccessButton"), ("Kart", "PrimaryButton"), ("Havale/EFT", "PrimaryButton") })
             {
-                var add = Act($"{method} ekle", () => Pay(method), style, "");
+                var add = Act($"{MethodName(method)} ekle", () => Pay(method), style, "");
                 add.MinHeight = 48;
                 add.Margin = new Thickness(0, 0, SmallGap, 0);
                 methods.Children.Add(add);
@@ -571,7 +691,7 @@ public sealed partial class MainWindow
                     value.Margin = new Thickness(0, 0, SmallGap, 0);
                     DockPanel.SetDock(value, Dock.Right);
                     row.Children.Add(value);
-                    var method = Label(payment.Method, 14);
+                    var method = Label(MethodName(payment.Method), 14);
                     method.VerticalAlignment = VerticalAlignment.Center;
                     row.Children.Add(method);
                     parts.Children.Add(new Border
@@ -602,7 +722,12 @@ public sealed partial class MainWindow
             if (id.Length > 0 && !accounts.ContainsKey(id))
                 throw new InvalidOperationException("Seçilen cari bulunamadı.");
             var total = Sum(basket);
+            var wasLow = products.Values.Where(IsLow).Select(p => p.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
             Save("sale", new Sale(id, basket.ToArray(), tender));
+            var nowLow = products.Values.Where(p => IsLow(p) && !wasLow.Contains(p.Code)).ToArray();
+            if (nowLow.Length > 0)
+                Toast(nowLow.Length == 1 ? $"Stok azaldı: {nowLow[0].Name} raf alt sınırına indi ({stock.GetValueOrDefault(nowLow[0].Code).Shop} {nowLow[0].Unit.ToLower(culture)})."
+                    : $"Stok azaldı: {nowLow.Length} ürün raf alt sınırına indi.", true);
             basket.Clear();
             payments.Clear();
             saleAccount = "";
@@ -617,70 +742,6 @@ public sealed partial class MainWindow
     }
 
     private Action? splitClose;
-
-    private record SaleRow(Guid Satış, DateTime Tarih, string Cari, string Ürünler, string Toplam, string Ödemeler);
-
-    private void ShowSalesHistory()
-    {
-        var body = new DockPanel();
-        var tools = new DockPanel { Margin = new Thickness(0, 0, 0, Gap) };
-        DockPanel.SetDock(tools, Dock.Top);
-        body.Children.Add(tools);
-        var summary = Label("", 13, Muted);
-        summary.VerticalAlignment = VerticalAlignment.Center;
-        summary.Margin = new Thickness(Gap, 0, 0, 0);
-        DockPanel.SetDock(summary, Dock.Right);
-        tools.Children.Add(summary);
-        tools.Children.Add(SearchField("Cari, ürün veya ödeme ara", out var query));
-        var grid = Table();
-        grid.AutoGenerateColumns = false;
-        grid.Height = 420;
-        void Column(string header, string path, double weight, string? format = null) => grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = header, Binding = new Binding(path) { StringFormat = format },
-            Width = new DataGridLength(weight, DataGridLengthUnitType.Star)
-        });
-        Column("Tarih", nameof(SaleRow.Tarih), 1, "dd.MM.yyyy HH:mm");
-        Column("Cari", nameof(SaleRow.Cari), 0.8);
-        Column("Ürünler", nameof(SaleRow.Ürünler), 2.4);
-        Column("Toplam", nameof(SaleRow.Toplam), 0.8);
-        Column("Ödemeler", nameof(SaleRow.Ödemeler), 1.4);
-        body.Children.Add(Card(grid));
-        var all = Read<Sale>("sale").Reverse().Select(s => new SaleRow(s.Entry.Id, s.Entry.CreatedAt.LocalDateTime, s.Value.Account,
-            string.Join(", ", s.Value.Lines.Select(l => $"{l.Name} × {l.Quantity}")),
-            Format(Sum(s.Value.Lines)),
-            string.Join(", ", s.Value.Payments.Select(p => $"{p.Method} {Format(p.Amount)} {p.Reference}".Trim())))).ToArray();
-        var todayTotal = Read<Sale>("sale").Where(s => s.Entry.CreatedAt.LocalDateTime.Date == DateTime.Today).Sum(s => Sum(s.Value.Lines));
-        summary.Text = $"Bugün {Format(todayTotal)}";
-        void Filter()
-        {
-            var term = query.Text.Trim();
-            grid.ItemsSource = all.Where(r => Matches(term, r.Cari, r.Ürünler, r.Ödemeler)).ToArray();
-        }
-        query.TextChanged += (_, _) => Filter();
-        Filter();
-        var modal = ShowModal("Satış geçmişi", body, 1040, subtitle: $"{all.Length} tamamlanan satış");
-        Append(modal.Footer, Act("Kapat", modal.Close));
-        Append(modal.Footer, Act("Satış özetini yazdır", () =>
-        {
-            if (grid.SelectedItem is not SaleRow selected) throw new InvalidOperationException("Listeden bir satış seç.");
-            PrintSale(selected.Satış);
-        }, "PrimaryButton", ""));
-    }
-
-    private void PrintSale(Guid saleId)
-    {
-        var sale = Read<Sale>("sale").Single(s => s.Entry.Id == saleId);
-        var document = new FlowDocument { PagePadding = new Thickness(45), FontFamily = FontFamily };
-        document.Blocks.Add(new Paragraph(new Bold(new Run(store.Setting("company", "Aden")))) { FontSize = 24 });
-        document.Blocks.Add(new Paragraph(new Run($"SATIŞ ÖZETİ · Mali belge yerine geçmez\n{sale.Entry.CreatedAt.LocalDateTime:g}\n{saleId}")));
-        foreach (var line in sale.Value.Lines)
-            document.Blocks.Add(new Paragraph(new Run($"{line.Name} × {line.Quantity}   {Format(line.UnitPrice * line.Quantity)}")));
-        document.Blocks.Add(new Paragraph(new Bold(new Run($"Toplam {Format(Sum(sale.Value.Lines))}"))));
-        foreach (var payment in sale.Value.Payments)
-            document.Blocks.Add(new Paragraph(new Run($"{payment.Method}   {Format(payment.Amount)}   {payment.Reference}")));
-        Print(document, "Aden satış özeti");
-    }
 
     private static void Print(FlowDocument document, string title)
     {

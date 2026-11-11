@@ -16,6 +16,7 @@
     <PackageReference Include="PDFsharp-MigraDoc-WPF" Version="6.2.4" />
     <PackageReference Include="ClosedXML" Version="0.105.1" />
     <PackageReference Include="Velopack" Version="1.2.161" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <AssemblyMetadata Include="AdenReleaseRepo" Value="$(AdenReleaseRepo)" />
     <Resource Include="Assets/*.png" />
     <EmbeddedResource Include="Migrations/*.sql" />

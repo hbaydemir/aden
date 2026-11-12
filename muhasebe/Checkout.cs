@@ -48,6 +48,9 @@ public sealed partial class MainWindow
             HorizontalContentAlignment = HorizontalAlignment.Left
         };
         AutomationProperties.SetName(count, "Adet çarpanı");
+        count.MaxLength = 7;
+        count.PreviewTextInput += (_, e) => { if (!e.Text.All(char.IsDigit)) e.Handled = true; };
+        count.LostKeyboardFocus += (_, _) => { if (!int.TryParse(count.Text, out var n) || n < 1) count.Text = "1"; };
         count.ToolTip = "Eklenecek adet";
         countHost.Children.Add(count);
         var times = Label("×", 18, Muted);
@@ -356,6 +359,11 @@ public sealed partial class MainWindow
             e.Handled = true;
             Run(() => AddProduct(Find(Required(search))));
         };
+        scanHandlers[posPage] = code => Run(() =>
+        {
+            try { AddProduct(Find(code)); }
+            finally { if (!int.TryParse(count.Text, out var n) || n < 1) count.Text = "1"; }
+        });
 
         // ── Sağ: sepet ──
         var cartDock = new DockPanel();

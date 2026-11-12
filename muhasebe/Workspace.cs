@@ -24,6 +24,15 @@ public sealed partial class MainWindow
     private readonly List<Action> refreshers = new();
     /// <summary>Barkod okuyucu: odak bir yazı alanında değilken gelen tuşlar bu sayfanın arama kutusuna yazılır.</summary>
     private readonly Dictionary<UIElement, TextBox> scanTargets = new();
+    /// <summary>Okutulan barkodu işleyen sayfa eylemi (Hızlı satışta sepete ekler).</summary>
+    private readonly Dictionary<UIElement, Action<string>> scanHandlers = new();
+    // Barkod okuyucu tuşları çok hızlı (karakter başına birkaç ms) ve Enter ile biter; elle yazım bu hızda olmaz.
+    private readonly System.Text.StringBuilder scanBuffer = new();
+    private DateTime scanLast;
+    private TextBox? scanBox;
+    private string scanBoxText = "";
+    private int scanBoxCaret;
+    private static readonly TimeSpan ScanGap = TimeSpan.FromMilliseconds(60);
     private readonly Grid modalLayer = new();
     private readonly StackPanel toastLayer = new()
     {
@@ -423,6 +432,17 @@ public sealed partial class MainWindow
         {
             if (modals.Count > 0 || e.Text.Length == 0 || char.IsControl(e.Text[0])) return;
             if (host.Content is not UIElement page || !scanTargets.TryGetValue(page, out var target)) return;
+            var now = DateTime.UtcNow;
+            if (scanBuffer.Length > 0 && now - scanLast > ScanGap) scanBuffer.Clear();
+            if (scanBuffer.Length == 0)
+            {
+                // Dizinin başında odaktaki kutuyu hatırla; okutma çıkarsa yazılanlar geri alınır.
+                scanBox = Keyboard.FocusedElement as TextBox;
+                scanBoxText = scanBox?.Text ?? "";
+                scanBoxCaret = scanBox?.CaretIndex ?? 0;
+            }
+            scanBuffer.Append(e.Text);
+            scanLast = now;
             var focused = Keyboard.FocusedElement;
             if (focused is System.Windows.Controls.Primitives.TextBoxBase or PasswordBox || focused is ComboBox { IsEditable: true }) return;
             e.Handled = true;
@@ -432,6 +452,26 @@ public sealed partial class MainWindow
         };
         PreviewKeyDown += (_, e) =>
         {
+            if (e.Key is Key.Enter or Key.Return && modals.Count == 0 && scanBuffer.Length >= 4 &&
+                DateTime.UtcNow - scanLast <= ScanGap * 3 && host.Content is UIElement scanPage &&
+                scanTargets.TryGetValue(scanPage, out var scanTarget))
+            {
+                var code = scanBuffer.ToString().Trim();
+                scanBuffer.Clear();
+                if (scanBox is not null && scanBox != scanTarget)
+                {
+                    // Okuyucu başka bir kutuya (ör. adet) yazdıysa o kutuyu eski haline getir.
+                    scanBox.Text = scanBoxText;
+                    scanBox.CaretIndex = Math.Min(scanBoxCaret, scanBox.Text.Length);
+                }
+                scanTarget.Text = code;
+                scanTarget.CaretIndex = code.Length;
+                if (scanBox == scanTarget && !scanHandlers.ContainsKey(scanPage)) return; // aramanın kendi Enter işlemi çalışsın
+                e.Handled = true;
+                scanTarget.Focus();
+                if (scanHandlers.TryGetValue(scanPage, out var handle)) handle(code);
+                return;
+            }
             if (e.Key == Key.Escape && modals.Count > 0)
             {
                 e.Handled = true;

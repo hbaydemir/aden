@@ -209,10 +209,13 @@ public sealed partial class MainWindow : Window
         if (products.TryGetValue(value, out var product)) return product;
         var barcode = value == DefaultBarcode ? null : products.Values.FirstOrDefault(p => p.Barcode.Length > 0 && p.Barcode == value);
         if (barcode is not null) return barcode;
+        // Hızlı satıştaki liste ile aynı kural: ad, kod veya barkodun içinde geçen ürünler.
         var matches = products.Values.Where(p =>
-            culture.CompareInfo.IndexOf(p.Name, value, CompareOptions.IgnoreCase) >= 0).Take(2).ToArray();
+            culture.CompareInfo.IndexOf(p.Name, value, CompareOptions.IgnoreCase) >= 0 ||
+            p.Code.Contains(value, StringComparison.OrdinalIgnoreCase) ||
+            (HasBarcode(p) && p.Barcode.Contains(value, StringComparison.OrdinalIgnoreCase))).Take(2).ToArray();
         return matches.Length == 1 ? matches[0] : throw new InvalidOperationException(
-            matches.Length == 0 ? "Ürün bulunamadı." : "Birden fazla ürün bulundu. Ürün kodunu veya barkodu gir.");
+            matches.Length == 0 ? "Ürün bulunamadı." : "Birden fazla ürün bulundu. Listeden ürüne dokun veya kodu/barkodu tam gir.");
     }
 
     private static string Required(TextBox field) => field.Text.Trim() is { Length: > 0 } value

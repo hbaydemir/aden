@@ -24,8 +24,8 @@ public static class Users
     public const string Developer = "dev";
     private const int Iterations = 120_000;
     // Geliştirici şifresinin özeti (düz metin kodda tutulmaz).
-    private const string DeveloperSalt = "YWRlbi1kZXZlbG9wZXItc2FsdA==";
-    private const string DeveloperHash = "It5WxTBm5+NNME3Im2otcu1pN9K0pinxpdzVJN643pc=";
+    private const string DeveloperSalt = "a0KED0MTApYyS+IYH0NmBw==";
+    private const string DeveloperHash = "+lONKOUy5VRlFNdySDlMqcWDp8olc21y8eu5WOILnMs=";
 
     public static UserAccount Create(string username, string name, string role, string password, bool mustChange = false)
     {
